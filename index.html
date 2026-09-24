@@ -7,7 +7,7 @@
     <meta name="description" content="A camera-powered whiteboard for drawing with your hands or a marked pencil, with on-device note recognition." />
     <title>MirrorBoard — Whiteboard AI</title>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-    <link rel="stylesheet" href="./style.css?v=20260924-wide-pencil" />
+    <link rel="stylesheet" href="./style.css?v=20260924-handwriting" />
   </head>
   <body>
     <div class="app-shell">
@@ -82,7 +82,7 @@
             <details class="pencil-details"><summary>Use a marked pencil <span>⌄</span></summary><p>Add a neon red sticker near the front tip and a pink sticker near the eraser end. Enable pencil tracking to use the tip as a precise cursor and flip it to erase. Touch your thumb and index fingertips to make a stroke.</p><label class="toggle-row"><input id="pencilToggle" type="checkbox" /> Track pencil markers</label></details>
           </div>
 
-          <div class="panel-section notes-panel"><div class="section-heading compact"><div><span class="eyebrow">CAPTURE</span><h2>Notes from ink</h2></div><span class="panel-spark">✳</span></div><p class="notes-intro">Turn writing on the board into editable text. Recognition runs on your device.</p><button class="button button-note" id="captureButton" type="button">✦ <span>Recognize writing</span></button><div class="notes-feedback" id="notesFeedback" role="status"></div><div class="notes-list" id="notesList"></div></div>
+          <div class="panel-section notes-panel"><div class="section-heading compact"><div><span class="eyebrow">CAPTURE</span><h2>Notes from ink</h2></div><span class="panel-spark">✳</span></div><p class="notes-intro">Turn writing on the board into editable text. Recognition runs on your device.</p><label class="field-label recognition-label" for="recognitionMode">Writing style</label><select id="recognitionMode"><option value="handwriting">Handwriting & cursive</option><option value="printed">Printed / block letters</option></select><p class="recognition-hint">First cursive use downloads a handwriting model. Write one line at a time with space between lines.</p><button class="button button-note" id="captureButton" type="button">✦ <span>Recognize writing</span></button><div class="notes-feedback" id="notesFeedback" role="status"></div><div class="notes-list" id="notesList"></div></div>
         </aside>
       </main>
     </div>
@@ -91,6 +91,6 @@
     <dialog id="accountDialog" class="account-dialog"><button class="dialog-close" id="closeAccount" aria-label="Close" type="button">×</button><span class="eyebrow">YOUR ACCOUNT</span><h2 id="accountTitle">Sign in to sync</h2><p class="account-intro" id="accountIntro">Save your board and notes across devices. Your local board stays on this device.</p><div id="accountUnavailable" class="account-unavailable" hidden>Email sign-in is not connected yet. Your board and notes are still saved on this device.</div><form id="authForm"><label>Email<input id="authEmail" type="email" autocomplete="email" required /></label><label>Password<input id="authPassword" type="password" autocomplete="current-password" minlength="6" required /></label><button class="button button-dark auth-submit" id="signInButton" type="submit">Sign in</button><div class="auth-alternatives"><button id="createAccountButton" type="button">Create account</button><button id="resetPasswordButton" type="button">Forgot password?</button></div></form><div id="signedInPanel" hidden><p class="account-email" id="accountEmail"></p><p class="account-sync" id="accountSyncStatus">Your board is synced to your account.</p><button class="button button-quiet" id="signOutButton" type="button">Sign out</button></div><p id="authMessage" class="auth-message" role="status"></p></dialog>
     <dialog id="clearDialog" class="confirm-dialog"><form method="dialog"><h2>Clear the board?</h2><p>Your saved notes will stay. The current drawing will be removed.</p><div class="dialog-actions"><button class="button button-quiet" value="cancel">Cancel</button><button class="button button-danger" id="confirmClear" value="clear">Clear board</button></div></form></dialog>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=20260924-wide-pencil"></script>
+    <script type="module" src="./app.js?v=20260924-handwriting"></script>
   </body>
 </html>

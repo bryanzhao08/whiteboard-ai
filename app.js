@@ -2,6 +2,7 @@ import { AdaptivePointFilter, OffhandGesture, PinchGate, pickDrawingHandIndex, p
 import { createPdfFromJpeg } from './pdf.mjs';
 import { createCloud, isFirebaseConfigured } from './cloud.mjs';
 import { firebaseConfig } from './firebase-config.js';
+import { findInkLineBounds } from './recognition.mjs?v=20260924-handwriting';
 
 const $ = (selector) => document.querySelector(selector);
 const canvas = $('#board');
@@ -109,13 +110,13 @@ function resizeBoard() {
   redraw();
 }
 
-function renderStroke(target, stroke, width, height) {
+function renderStroke(target, stroke, width, height, overrideColor = null) {
   const points = stroke.points;
   if (!points.length) return;
   target.save();
   target.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over';
   const displayColors = { '#172a33': '#e9f1ec', '#5287ab': '#9ac9e0', '#7b9871': '#b4d3a9' };
-  const color = target === ctx && state.theme === 'dark' && stroke.tool === 'pen' ? (displayColors[stroke.color] || stroke.color) : stroke.color;
+  const color = overrideColor || (target === ctx && state.theme === 'dark' && stroke.tool === 'pen' ? (displayColors[stroke.color] || stroke.color) : stroke.color);
   target.strokeStyle = color;
   target.fillStyle = color;
   target.lineWidth = stroke.tool === 'eraser' ? Math.max(stroke.size * 3, 18) : stroke.size;
@@ -248,6 +249,28 @@ function makeImageCanvas(scale = 2) {
   imageCtx.fillStyle = '#ffffff'; imageCtx.fillRect(0, 0, image.width, image.height);
   imageCtx.drawImage(ink, 0, 0);
   return image;
+}
+
+function makeRecognitionLines() {
+  const { width, height } = canvas.getBoundingClientRect();
+  const scale = 3;
+  const ink = document.createElement('canvas');
+  ink.width = Math.max(1, Math.round(width * scale));
+  ink.height = Math.max(1, Math.round(height * scale));
+  const inkCtx = ink.getContext('2d', { willReadFrequently: true });
+  inkCtx.scale(ink.width / width, ink.height / height);
+  for (const stroke of state.strokes) renderStroke(inkCtx, stroke, width, height, '#111111');
+  const bounds = findInkLineBounds(inkCtx.getImageData(0, 0, ink.width, ink.height).data, ink.width, ink.height);
+  return bounds.map(({ left, top, right, bottom }) => {
+    const line = document.createElement('canvas');
+    line.width = right - left;
+    line.height = bottom - top;
+    const lineCtx = line.getContext('2d');
+    lineCtx.fillStyle = '#ffffff';
+    lineCtx.fillRect(0, 0, line.width, line.height);
+    lineCtx.drawImage(ink, left, top, line.width, line.height, 0, 0, line.width, line.height);
+    return line;
+  });
 }
 
 function downloadBlob(blob, extension) {
@@ -420,28 +443,88 @@ async function loadTesseract() {
   return window.Tesseract;
 }
 
+let handwritingPipelinePromise;
+async function loadHandwritingPipeline() {
+  if (!handwritingPipelinePromise) {
+    handwritingPipelinePromise = (async () => {
+      const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1');
+      env.allowLocalModels = false;
+      return pipeline('image-to-text', 'Xenova/trocr-small-handwritten', {
+        dtype: 'q8',
+        progress_callback: progress => {
+          if (progress.status === 'progress' && Number.isFinite(progress.progress)) {
+            $('#notesFeedback').textContent = `Downloading handwriting model… ${Math.round(progress.progress)}%`;
+          }
+        }
+      });
+    })().catch(error => { handwritingPipelinePromise = null; throw error; });
+  }
+  return handwritingPipelinePromise;
+}
+
+async function recognizePrinted(lines) {
+  const Tesseract = await loadTesseract();
+  const worker = await Tesseract.createWorker('eng', 1, { logger: message => {
+    if (message.status === 'recognizing text') $('#notesFeedback').textContent = `Reading printed ink… ${Math.round((message.progress || 0) * 100)}%`;
+  }});
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE, preserve_interword_spaces: '1' });
+    const text = [];
+    for (let i = 0; i < lines.length; i++) {
+      $('#notesFeedback').textContent = `Reading printed line ${i + 1} of ${lines.length}…`;
+      const result = await worker.recognize(lines[i]);
+      text.push(result.data.text.trim());
+    }
+    return text.filter(Boolean).join('\n');
+  } finally {
+    await worker.terminate();
+  }
+}
+
+async function recognizeHandwriting(lines) {
+  const recognize = await loadHandwritingPipeline();
+  const text = [];
+  for (let i = 0; i < lines.length; i++) {
+    $('#notesFeedback').textContent = `Reading handwritten line ${i + 1} of ${lines.length}…`;
+    const result = await recognize(lines[i].toDataURL('image/png'));
+    text.push(result[0]?.generated_text?.trim() || '');
+  }
+  return text.filter(Boolean).join('\n');
+}
+
 $('#captureButton').addEventListener('click', async () => {
   finishStroke();
   if (!state.strokes.length) { toast('Write something on the board first'); return; }
   const button = $('#captureButton'); button.disabled = true;
-  $('#notesFeedback').textContent = 'Loading handwriting recognition…';
-  let worker;
+  const handwriting = $('#recognitionMode').value === 'handwriting';
+  $('#notesFeedback').textContent = 'Preparing ink for recognition…';
   try {
-    const Tesseract = await loadTesseract();
-    worker = await Tesseract.createWorker('eng', 1, { logger: message => {
-      if (message.status === 'recognizing text') $('#notesFeedback').textContent = `Reading ink… ${Math.round((message.progress || 0) * 100)}%`;
-    }});
-    const result = await worker.recognize(makeImageCanvas(3));
-    const recognized = result.data.text.trim();
-    if (!recognized) { $('#notesFeedback').textContent = 'No writing found. Try larger, darker letters.'; return; }
+    const lines = makeRecognitionLines();
+    if (!lines.length) { $('#notesFeedback').textContent = 'No writing found. Try writing larger letters.'; return; }
+    let recognized;
+    let usedPrintedFallback = false;
+    if (handwriting) {
+      try {
+        recognized = await recognizeHandwriting(lines);
+      } catch (error) {
+        console.error('Handwriting model failed', error);
+        $('#notesFeedback').textContent = 'Handwriting model unavailable; trying printed text recognition…';
+        usedPrintedFallback = true;
+        recognized = await recognizePrinted(lines);
+      }
+    } else {
+      recognized = await recognizePrinted(lines);
+    }
+    if (!recognized) { $('#notesFeedback').textContent = 'No text recognized. Try larger writing with clear space between lines.'; return; }
     state.notes.unshift({ id: crypto.randomUUID(), created: Date.now(), text: recognized });
     saveNotes(); renderNotes();
-    $('#notesFeedback').textContent = 'Note captured. You can edit the text below.';
+    $('#notesFeedback').textContent = usedPrintedFallback
+      ? 'Handwriting model was unavailable. This note used printed-text recognition; review it below.'
+      : 'Note captured. You can edit the text below.';
     toast('Writing recognized');
   } catch (error) {
     console.error(error); $('#notesFeedback').textContent = 'Recognition could not load. Check your connection and try again.';
   } finally {
-    if (worker) await worker.terminate();
     button.disabled = false;
   }
 });

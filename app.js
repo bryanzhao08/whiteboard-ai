@@ -1,4 +1,7 @@
 import { PinchGate, isIPhoneCamera, pickCameraDevice } from './tracking.mjs';
+import { createPdfFromJpeg } from './pdf.mjs';
+import { createCloud, isFirebaseConfigured } from './cloud.mjs';
+import { firebaseConfig } from './firebase-config.js';
 
 const $ = (selector) => document.querySelector(selector);
 const canvas = $('#board');
@@ -9,15 +12,20 @@ const overlayCtx = overlay.getContext('2d');
 const cursor = $('#handCursor');
 const STORAGE_KEY = 'mirrorboard-v1';
 const NOTES_KEY = 'mirrorboard-notes-v1';
+const NAME_KEY = 'mirrorboard-name-v1';
+const THEME_KEY = 'mirrorboard-theme-v1';
 const colors = ['#172a33', '#e87355', '#5287ab', '#7b9871'];
 const state = {
   strokes: [], redo: [], notes: [], current: null, tool: 'pen', color: colors[0], size: 5,
+  name: 'Untitled board', theme: 'light', user: null, cloudReady: false,
   mode: 'computer', stream: null, landmarker: null, running: false, frameId: 0,
   lastVideoTime: -1, dominantWrist: null, lastHandSeenAt: 0,
   pinchGate: new PinchGate(), pendingCameraStart: null,
   offhandWasFist: false, offhandPointStart: 0, lastGestureAt: 0,
   wavePoints: [], cameraId: '', pencil: false, cameraToken: 0
 };
+let cloud = null;
+let cloudSaveQueue = Promise.resolve();
 
 function toast(message) {
   const element = $('#toast');
@@ -32,10 +40,43 @@ function setStatus(text, kind = '') {
   $('#statusLight').className = `status-light ${kind}`;
 }
 
+function saveLocalBoard() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.strokes));
+    localStorage.setItem(NOTES_KEY, JSON.stringify(state.notes));
+    localStorage.setItem(NAME_KEY, state.name);
+    $('#saveState').textContent = 'Saved locally';
+  } catch { $('#saveState').textContent = 'Storage full'; }
+}
+
+function boardSnapshot() {
+  state.lastSnapshotAt = Math.max(Date.now(), (state.lastSnapshotAt || 0) + 1);
+  return JSON.parse(JSON.stringify({ name: state.name, strokes: state.strokes, notes: state.notes, updatedAt: state.lastSnapshotAt }));
+}
+
+function queueCloudSave() {
+  if (!cloud || !state.user || !state.cloudReady) return;
+  const uid = state.user.uid;
+  const snapshot = boardSnapshot();
+  const draftKey = `mirrorboard-cloud-draft-${uid}`;
+  try { localStorage.setItem(draftKey, JSON.stringify(snapshot)); } catch { /* Cloud still receives the board. */ }
+  $('#saveState').textContent = 'Syncing…';
+  cloudSaveQueue = cloudSaveQueue.catch(() => {}).then(async () => {
+    await cloud.saveBoard(uid, snapshot);
+    try {
+      const draft = JSON.parse(localStorage.getItem(draftKey) || 'null');
+      if (draft?.updatedAt === snapshot.updatedAt) localStorage.removeItem(draftKey);
+    } catch { /* Ignore unavailable local storage. */ }
+    if (state.user?.uid === uid) $('#saveState').textContent = 'Synced';
+  }).catch(error => {
+    console.error(error);
+    if (state.user?.uid === uid) $('#saveState').textContent = 'Sync pending';
+  });
+}
+
 function markSaved() {
-  $('#saveState').textContent = 'Saved locally';
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.strokes)); }
-  catch { $('#saveState').textContent = 'Storage full'; }
+  if (state.user && state.cloudReady) queueCloudSave();
+  else saveLocalBoard();
 }
 
 function loadSaved() {
@@ -44,7 +85,19 @@ function loadSaved() {
     if (Array.isArray(saved)) state.strokes = saved.filter(s => s && Array.isArray(s.points) && ['pen', 'eraser'].includes(s.tool));
     const notes = JSON.parse(localStorage.getItem(NOTES_KEY) || '[]');
     if (Array.isArray(notes)) state.notes = notes.filter(n => n && typeof n.text === 'string');
+    state.name = localStorage.getItem(NAME_KEY)?.trim() || 'Untitled board';
+    $('#boardName').value = state.name;
   } catch { /* Start with an empty board when stored data is invalid. */ }
+}
+
+function setTheme(theme) {
+  state.theme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = state.theme;
+  document.querySelector('meta[name="theme-color"]').content = state.theme === 'dark' ? '#10191e' : '#f5f2ed';
+  $('#themeButton').textContent = state.theme === 'dark' ? '☀' : '☾';
+  $('#themeButton').setAttribute('aria-label', state.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  try { localStorage.setItem(THEME_KEY, state.theme); } catch { /* Theme remains active for this visit. */ }
+  redraw();
 }
 
 function resizeBoard() {
@@ -61,8 +114,10 @@ function renderStroke(target, stroke, width, height) {
   if (!points.length) return;
   target.save();
   target.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over';
-  target.strokeStyle = stroke.color;
-  target.fillStyle = stroke.color;
+  const displayColors = { '#172a33': '#e9f1ec', '#5287ab': '#9ac9e0', '#7b9871': '#b4d3a9' };
+  const color = target === ctx && state.theme === 'dark' && stroke.tool === 'pen' ? (displayColors[stroke.color] || stroke.color) : stroke.color;
+  target.strokeStyle = color;
+  target.fillStyle = color;
   target.lineWidth = stroke.tool === 'eraser' ? Math.max(stroke.size * 3, 18) : stroke.size;
   target.lineCap = 'round';
   target.lineJoin = 'round';
@@ -188,13 +243,36 @@ function makeImageCanvas(scale = 2) {
   return image;
 }
 
-$('#exportButton').addEventListener('click', () => {
-  finishStroke();
+function downloadBlob(blob, extension) {
   const link = document.createElement('a');
-  link.href = makeImageCanvas().toDataURL('image/png');
-  link.download = `mirrorboard-${new Date().toISOString().slice(0, 10)}.png`;
-  link.click(); toast('PNG exported');
+  const filename = state.name.trim().replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'mirrorboard';
+  link.href = URL.createObjectURL(blob);
+  link.download = `${filename}.${extension}`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 30000);
+}
+
+$('#exportPngButton').addEventListener('click', () => {
+  finishStroke();
+  makeImageCanvas().toBlob(blob => { if (blob) { downloadBlob(blob, 'png'); toast('PNG exported'); } }, 'image/png');
+  $('#exportMenu').open = false;
 });
+
+$('#exportPdfButton').addEventListener('click', () => {
+  finishStroke();
+  const image = makeImageCanvas(2);
+  const pdf = createPdfFromJpeg(image.toDataURL('image/jpeg', .94), image.width, image.height);
+  downloadBlob(pdf, 'pdf'); toast('PDF exported');
+  $('#exportMenu').open = false;
+});
+
+$('#themeButton').addEventListener('click', () => setTheme(state.theme === 'dark' ? 'light' : 'dark'));
+$('#boardName').addEventListener('change', event => {
+  state.name = event.target.value.trim() || 'Untitled board';
+  event.target.value = state.name;
+  markSaved();
+});
+$('#boardName').addEventListener('keydown', event => { if (event.key === 'Enter') event.target.blur(); });
 
 function renderNotes() {
   const list = $('#notesList'); list.replaceChildren();
@@ -212,8 +290,117 @@ function renderNotes() {
 }
 
 function saveNotes() {
-  try { localStorage.setItem(NOTES_KEY, JSON.stringify(state.notes)); }
-  catch { toast('Unable to save more notes on this device'); }
+  markSaved();
+}
+
+function applyBoard(board) {
+  state.name = typeof board.name === 'string' && board.name.trim() ? board.name.trim() : 'Untitled board';
+  state.strokes = Array.isArray(board.strokes) ? board.strokes.filter(stroke => stroke && Array.isArray(stroke.points)) : [];
+  state.notes = Array.isArray(board.notes) ? board.notes.filter(note => note && typeof note.text === 'string') : [];
+  state.redo = [];
+  $('#boardName').value = state.name;
+  redraw(); renderNotes();
+}
+
+function renderAccountState() {
+  const signedIn = !!state.user;
+  $('#authForm').hidden = signedIn || !cloud;
+  $('#signedInPanel').hidden = !signedIn;
+  $('#accountButton').textContent = signedIn ? state.user.email || 'Account' : 'Sign in';
+  $('#accountButton').title = signedIn ? state.user.email || 'Account' : 'Sign in';
+  $('#accountTitle').textContent = signedIn ? 'Your account' : 'Sign in to sync';
+  $('#accountIntro').textContent = signedIn ? 'This board and your notes are saved to your account when sync is available.' : 'Save your board and notes across devices. Your local board stays on this device.';
+  $('#accountEmail').textContent = state.user?.email || '';
+}
+
+function friendlyAuthError(error) {
+  const code = error?.code || '';
+  if (code.includes('invalid-credential') || code.includes('wrong-password') || code.includes('user-not-found')) return 'Email or password is incorrect.';
+  if (code.includes('email-already-in-use')) return 'An account already uses this email. Try signing in.';
+  if (code.includes('weak-password')) return 'Use a password with at least 6 characters.';
+  if (code.includes('too-many-requests')) return 'Too many attempts. Try again later.';
+  if (code.includes('network-request-failed')) return 'Connection failed. Check your internet connection.';
+  return 'Account request failed. Please try again.';
+}
+
+async function handleAuthChange(user) {
+  if (!user) {
+    state.user = null; state.cloudReady = false;
+    loadSaved(); redraw(); renderNotes(); renderAccountState();
+    $('#saveState').textContent = 'Saved locally';
+    return;
+  }
+  state.user = user; state.cloudReady = false; renderAccountState();
+  $('#saveState').textContent = 'Loading cloud…';
+  try {
+    const remote = await cloud.loadBoard(user.uid);
+    if (state.user?.uid !== user.uid) return;
+    let draft = null;
+    try { draft = JSON.parse(localStorage.getItem(`mirrorboard-cloud-draft-${user.uid}`) || 'null'); } catch { /* No local draft. */ }
+    const useDraft = draft && (!remote || Number(draft.updatedAt) > Number(remote.updatedAt || 0));
+    if (useDraft) applyBoard(draft);
+    else if (remote) applyBoard(remote);
+    state.cloudReady = true;
+    $('#saveState').textContent = remote && !useDraft ? 'Synced' : 'Syncing…';
+    $('#accountSyncStatus').textContent = 'Your board and notes are available on your signed-in devices.';
+    if (!remote || useDraft) queueCloudSave();
+  } catch (error) {
+    console.error(error);
+    state.cloudReady = false;
+    $('#saveState').textContent = 'Cloud unavailable';
+    $('#accountSyncStatus').textContent = 'Cloud sync is unavailable. Your local board remains on this device.';
+  }
+}
+
+$('#accountButton').addEventListener('click', () => { $('#authMessage').textContent = ''; $('#accountDialog').showModal(); });
+$('#closeAccount').addEventListener('click', () => $('#accountDialog').close());
+$('#authForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!cloud) return;
+  const button = $('#signInButton'); button.disabled = true; $('#authMessage').textContent = 'Signing in…';
+  try { await cloud.signIn($('#authEmail').value.trim(), $('#authPassword').value); $('#authPassword').value = ''; $('#accountDialog').close(); }
+  catch (error) { $('#authMessage').textContent = friendlyAuthError(error); }
+  finally { button.disabled = false; }
+});
+$('#createAccountButton').addEventListener('click', async () => {
+  if (!cloud || !$('#authForm').reportValidity()) return;
+  $('#authMessage').textContent = 'Creating account…';
+  try { await cloud.createAccount($('#authEmail').value.trim(), $('#authPassword').value); $('#authPassword').value = ''; $('#accountDialog').close(); toast('Account created'); }
+  catch (error) { $('#authMessage').textContent = friendlyAuthError(error); }
+});
+$('#resetPasswordButton').addEventListener('click', async () => {
+  if (!cloud) return;
+  if (!$('#authEmail').value.trim() || !$('#authEmail').checkValidity()) { $('#authEmail').reportValidity(); return; }
+  try { await cloud.resetPassword($('#authEmail').value.trim()); $('#authMessage').textContent = 'If this email has an account, a reset link has been sent.'; }
+  catch (error) { $('#authMessage').textContent = friendlyAuthError(error); }
+});
+$('#signOutButton').addEventListener('click', async () => {
+  if (!cloud) return;
+  $('#signOutButton').disabled = true;
+  try { await cloudSaveQueue; await cloud.signOut(); $('#accountDialog').close(); toast('Signed out'); }
+  catch (error) { $('#authMessage').textContent = friendlyAuthError(error); }
+  finally { $('#signOutButton').disabled = false; }
+});
+
+async function initializeCloud() {
+  if (!isFirebaseConfigured(firebaseConfig)) {
+    $('#accountUnavailable').hidden = false;
+    renderAccountState();
+    return;
+  }
+  $('#accountUnavailable').textContent = 'Connecting account services…';
+  $('#accountUnavailable').hidden = false;
+  try {
+    cloud = await createCloud(firebaseConfig);
+    $('#accountUnavailable').hidden = true;
+    renderAccountState();
+    cloud.onAuthChange(handleAuthChange);
+  } catch (error) {
+    console.error(error);
+    $('#accountUnavailable').textContent = 'Account services could not load. Check your Firebase settings and connection.';
+    $('#accountUnavailable').hidden = false;
+    renderAccountState();
+  }
 }
 
 async function loadTesseract() {
@@ -488,5 +675,9 @@ function processFrame() {
 }
 
 loadSaved(); renderNotes();
+let initialTheme = 'light';
+try { initialTheme = localStorage.getItem(THEME_KEY) || 'light'; } catch { /* Use the default theme. */ }
+setTheme(initialTheme);
+initializeCloud();
 new ResizeObserver(resizeBoard).observe($('#boardWrap'));
 updateCameraList();

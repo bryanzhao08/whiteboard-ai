@@ -1,4 +1,4 @@
-import { AdaptivePointFilter, OffhandGesture, PinchGate, pickDrawingHandIndex, pinchRatio, isIPhoneCamera, pickCameraDevice } from './tracking.mjs';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, pickDrawingHandIndex, pinchRatio, isIPhoneCamera, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame } from './tracking.mjs';
 import { createPdfFromJpeg } from './pdf.mjs';
 import { createCloud, isFirebaseConfigured } from './cloud.mjs';
 import { firebaseConfig } from './firebase-config.js';
@@ -453,7 +453,7 @@ function setMode(mode) {
   document.querySelectorAll('[data-mode]').forEach(button => button.classList.toggle('is-active', button.dataset.mode === mode));
   $('#cameraBox').classList.toggle('mirrored', mode === 'computer');
   $('#modeDescription').textContent = mode === 'iphone'
-    ? 'Point your iPhone at your hands or desk. On a Mac, connect it with Continuity Camera first.'
+      ? 'On a Mac, lock your nearby iPhone and select its Continuity Camera below. On iPhone, use the rear camera.'
     : 'Face your computer camera. Touch thumb and index tips to draw; separate them to stop immediately.';
   $('#gestureHint').textContent = 'Touch fingertips to draw · separate to stop';
   updateCameraList();
@@ -470,13 +470,14 @@ async function updateCameraList() {
   try {
     const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput');
     const select = $('#cameraSelect');
-    const defaultLabel = state.mode === 'iphone' ? (isOnIPhone ? 'iPhone rear camera' : 'Auto-detect iPhone') : 'Default computer camera';
+    const defaultLabel = state.mode === 'iphone' ? (isOnIPhone ? 'iPhone rear camera' : 'Auto-detect Continuity Camera') : 'Default computer camera';
     select.replaceChildren(new Option(defaultLabel, ''));
-    const matching = devices.filter(device => state.mode === 'iphone' ? isIPhoneCamera(device) : !isIPhoneCamera(device));
+    const matching = devices.filter(device => state.mode === 'iphone' ? isOnIPhone || isIPhoneCamera(device) : !isIPhoneCamera(device));
     matching.forEach((device, index) => select.add(new Option(device.label || `Camera ${index + 1}`, device.deviceId)));
     select.value = matching.some(device => device.deviceId === state.cameraId) ? state.cameraId : '';
   } catch { /* Device labels may remain hidden until permission is granted. */ }
 }
+navigator.mediaDevices?.addEventListener?.('devicechange', updateCameraList);
 
 async function loadLandmarker() {
   if (state.landmarker) return state.landmarker;
@@ -498,30 +499,24 @@ async function startCamera() {
   $('#cameraButtonText').textContent = 'Starting…'; $('#cameraButton').disabled = true;
   setStatus('Starting camera');
   try {
-    let devices = await navigator.mediaDevices.enumerateDevices();
-    let selected = pickCameraDevice(devices, state.mode, state.cameraId);
-    if (state.mode === 'iphone' && !isOnIPhone && !selected) {
-      // Camera labels can be hidden until the browser has camera permission.
-      const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
-      permissionStream.getTracks().forEach(track => track.stop());
-      if (token !== state.cameraToken) return;
-      devices = await navigator.mediaDevices.enumerateDevices();
-      selected = pickCameraDevice(devices, state.mode, state.cameraId);
-      if (!selected) throw Object.assign(new Error('iPhone camera unavailable'), { name: 'IPhoneCameraNotFound' });
-    }
-    const constraints = selected?.deviceId
-      ? { deviceId: { exact: selected.deviceId } }
-      : { facingMode: state.mode === 'iphone' ? 'environment' : 'user' };
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...constraints, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } } });
+    const selected = await findCameraWithPermission(navigator.mediaDevices, state.mode, state.cameraId, isOnIPhone);
+    if (token !== state.cameraToken) return;
+    if (state.mode === 'iphone' && !isOnIPhone && !selected)
+      throw Object.assign(new Error('iPhone camera unavailable'), { name: 'IPhoneCameraNotFound' });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: cameraVideoConstraints(selected, state.mode) });
     if (token !== state.cameraToken) { stream.getTracks().forEach(track => track.stop()); return; }
     state.stream = stream;
-    const activeLabel = stream.getVideoTracks()[0]?.label || '';
-    if (state.mode === 'iphone' && !isOnIPhone && !isIPhoneCamera({ label: activeLabel }))
+    const videoTrack = stream.getVideoTracks()[0];
+    const activeLabel = videoTrack?.label || '';
+    if (state.mode === 'iphone' && !isOnIPhone && activeLabel && !isIPhoneCamera({ label: activeLabel }))
       throw Object.assign(new Error('Selected camera is not an iPhone'), { name: 'IPhoneCameraNotFound' });
-    if (state.mode === 'computer' && isIPhoneCamera({ label: activeLabel }))
+    if (state.mode === 'computer' && activeLabel && isIPhoneCamera({ label: activeLabel }))
       throw Object.assign(new Error('Selected camera is an iPhone'), { name: 'ComputerCameraNotFound' });
     video.srcObject = stream;
-    await video.play(); await updateCameraList();
+    setStatus(state.mode === 'iphone' && !isOnIPhone ? 'Connecting Continuity Camera' : 'Connecting camera');
+    await waitForVideoFrame(video);
+    if (token !== state.cameraToken) return;
+    await updateCameraList();
     setStatus('Loading hand tracking');
     await loadLandmarker();
     if (token !== state.cameraToken) return;
@@ -529,14 +524,20 @@ async function startCamera() {
     $('#cameraBox').classList.add('active');
     $('#cameraBox').classList.toggle('mirrored', state.mode === 'computer');
     $('#cameraButtonText').textContent = 'Stop camera'; $('#cameraButton').disabled = false;
+    videoTrack?.addEventListener('ended', () => {
+      if (state.stream !== stream) return;
+      stopCamera(); setStatus('Camera disconnected', 'error'); toast('Reconnect the camera, then start it again');
+    }, { once: true });
     setStatus('Looking for hands', 'live');
     processFrame();
   } catch (error) {
+    if (token !== state.cameraToken) return;
     console.error(error); stopCamera();
     const iphoneMissing = error.name === 'IPhoneCameraNotFound';
     const computerMissing = error.name === 'ComputerCameraNotFound';
-    setStatus(iphoneMissing ? 'iPhone camera not found' : computerMissing ? 'Computer camera not found' : error.name === 'NotAllowedError' ? 'Camera permission denied' : 'Camera could not start', 'error');
-    toast(iphoneMissing ? 'Connect your iPhone with Continuity Camera, then try again' : computerMissing ? 'Choose a computer camera in Camera source' : error.name === 'NotAllowedError' ? 'Allow camera access and try again' : 'Check the camera and your connection');
+    const noFrames = error.name === 'NoVideoFrames';
+    setStatus(iphoneMissing ? 'iPhone camera not found' : noFrames ? 'Camera has no video' : computerMissing ? 'Computer camera not found' : error.name === 'NotAllowedError' ? 'Camera permission denied' : 'Camera could not start', 'error');
+    toast(iphoneMissing ? 'Lock your iPhone, keep it near the Mac, then try again' : noFrames ? (state.mode === 'iphone' && !isOnIPhone ? 'No video arrived. Unlock then lock your iPhone or reconnect it' : 'No video arrived. Reconnect the selected camera and try again') : computerMissing ? 'Choose a computer camera in Camera source' : error.name === 'NotAllowedError' ? 'Allow camera access and try again' : 'Check the camera and your connection');
   }
 }
 

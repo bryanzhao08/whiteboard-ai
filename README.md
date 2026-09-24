@@ -23,7 +23,9 @@ python3 -m http.server 8000
 
 Open <http://localhost:8000>. Camera access requires localhost or HTTPS. The first camera use downloads the MediaPipe model and runtime; note recognition downloads the Tesseract runtime and English data. An internet connection is required for those downloads. Mouse and touch drawing work without them.
 
-To use the iPhone camera on a Mac, set up [Apple Continuity Camera](https://support.apple.com/en-us/102546), then select **iPhone camera** in MirrorBoard and start the camera. The iPhone must appear as a camera source on your Mac. If you open MirrorBoard directly on an iPhone, iPhone mode uses its rear camera.
+To use the iPhone camera on a Mac, set up [Apple Continuity Camera](https://support.apple.com/en-us/102546). Keep the iPhone nearby and locked, with Wi-Fi, Bluetooth, and Continuity Camera enabled. Select **iPhone camera** in MirrorBoard, then press **Start camera**. The browser may first ask for ordinary camera permission so MirrorBoard can reveal device labels. It then selects the iPhone by its exact device ID; it will not silently switch to the Mac webcam. The camera list updates when devices connect or disconnect.
+
+If the iPhone is listed but its preview stays blank, unlock and lock it again, reconnect it, or try a USB connection, then restart the camera. MirrorBoard reports a stream that delivers no video frames. If you open MirrorBoard directly on an iPhone, iPhone mode uses its rear camera.
 
 ## Publish with GitHub Pages
 

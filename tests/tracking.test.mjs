@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, pinchRatio, pickDrawingHandIndex, isIPhoneCamera, pickCameraDevice } from '../tracking.mjs';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, pinchRatio, pickDrawingHandIndex, isIPhoneCamera, pickCameraDevice, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame } from '../tracking.mjs';
 
 function makeHand(pose = 'palm', offsetX = 0) {
   const hand = Array.from({ length: 21 }, () => ({ x: .5 + offsetX, y: .7 }));
@@ -83,6 +83,44 @@ test('camera selection keeps computer and iPhone sources separate', () => {
   assert.equal(pickCameraDevice(devices, 'iphone')?.deviceId, 'phone');
   assert.equal(pickCameraDevice(devices, 'iphone', 'mac'), null);
   assert.equal(pickCameraDevice(devices.slice(1), 'iphone'), null);
+  assert.equal(pickCameraDevice([{ kind: 'videoinput', deviceId: 'rear', label: 'Back Camera' }], 'iphone', '', true)?.deviceId, 'rear');
+  assert.equal(cameraVideoConstraints(devices[0], 'iphone').deviceId.exact, 'phone');
+  assert.equal(cameraVideoConstraints(null, 'iphone').facingMode, 'environment');
+});
+
+test('Continuity Camera is enumerated while the permission stream is still active', async () => {
+  const events = [];
+  let permissionOpen = false;
+  const mediaDevices = {
+    async enumerateDevices() {
+      events.push('enumerate');
+      return permissionOpen
+        ? [{ kind: 'videoinput', deviceId: 'phone', label: "Bryan's iPhone Camera" }]
+        : [{ kind: 'videoinput', deviceId: 'default', label: '' }];
+    },
+    async getUserMedia() {
+      events.push('permission');
+      permissionOpen = true;
+      return { getTracks: () => [{ stop: () => { events.push('stop'); permissionOpen = false; } }] };
+    },
+  };
+  const selected = await findCameraWithPermission(mediaDevices, 'iphone');
+  assert.equal(selected.deviceId, 'phone');
+  assert.deepEqual(events, ['enumerate', 'permission', 'enumerate', 'stop']);
+});
+
+test('camera startup waits for real frames and reports a stalled stream', async () => {
+  const video = new EventTarget();
+  video.readyState = 0;
+  video.videoWidth = 0;
+  video.videoHeight = 0;
+  video.play = async () => {};
+  const ready = waitForVideoFrame(video, 100);
+  video.readyState = 2; video.videoWidth = 960; video.videoHeight = 540;
+  video.dispatchEvent(new Event('loadeddata'));
+  await ready;
+  video.readyState = 0; video.videoWidth = 0; video.videoHeight = 0;
+  await assert.rejects(waitForVideoFrame(video, 20), { name: 'NoVideoFrames' });
 });
 
 test('hand smoothing damps small jitter without holding back deliberate movement', () => {

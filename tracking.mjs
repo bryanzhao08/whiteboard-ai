@@ -153,10 +153,58 @@ export function isIPhoneCamera(device) {
   return /iphone|continuity camera/i.test(device?.label || '');
 }
 
-export function pickCameraDevice(devices, mode, selectedId = '') {
+export function pickCameraDevice(devices, mode, selectedId = '', onIPhone = false) {
   const cameras = devices.filter(device => device.kind === 'videoinput');
-  const matching = cameras.filter(device => mode === 'iphone' ? isIPhoneCamera(device) : !isIPhoneCamera(device));
+  const matching = cameras.filter(device => mode === 'iphone' ? onIPhone || isIPhoneCamera(device) : !isIPhoneCamera(device));
   if (selectedId) return matching.find(device => device.deviceId === selectedId) || null;
+  if (mode === 'iphone' && onIPhone) return matching.find(device => /back|rear|environment/i.test(device.label)) || null;
   if (mode === 'iphone') return matching[0] || null;
   return matching.find(device => /built-in|facetime|integrated|macbook|display/i.test(device.label)) || matching[0] || null;
+}
+
+export async function findCameraWithPermission(mediaDevices, mode, selectedId = '', onIPhone = false) {
+  let devices = await mediaDevices.enumerateDevices();
+  let selected = pickCameraDevice(devices, mode, selectedId, onIPhone);
+  if (mode !== 'iphone' || onIPhone || selected) return selected;
+  // Camera labels may only be exposed while an authorized stream is active.
+  const permissionStream = await mediaDevices.getUserMedia({ audio: false, video: true });
+  try {
+    devices = await mediaDevices.enumerateDevices();
+    selected = pickCameraDevice(devices, mode, selectedId);
+  } finally {
+    permissionStream.getTracks().forEach(track => track.stop());
+  }
+  return selected;
+}
+
+export function cameraVideoConstraints(selected, mode) {
+  const source = selected?.deviceId
+    ? { deviceId: { exact: selected.deviceId } }
+    : { facingMode: mode === 'iphone' ? 'environment' : 'user' };
+  return { ...source, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } };
+}
+
+export function waitForVideoFrame(video, timeoutMs = 7000) {
+  return new Promise((resolve, reject) => {
+    let timeout, poll;
+    const cleanup = () => {
+      clearTimeout(timeout);
+      clearInterval(poll);
+      video.removeEventListener('loadeddata', check);
+      video.removeEventListener('resize', check);
+    };
+    const fail = error => { cleanup(); reject(error); };
+    const check = () => {
+      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+        cleanup(); resolve();
+      }
+    };
+    video.addEventListener('loadeddata', check);
+    video.addEventListener('resize', check);
+    timeout = setTimeout(() => fail(Object.assign(new Error('Camera delivered no video frames'), { name: 'NoVideoFrames' })), timeoutMs);
+    poll = setInterval(check, 80);
+    try { Promise.resolve(video.play()).catch(fail); }
+    catch (error) { fail(error); }
+    check();
+  });
 }

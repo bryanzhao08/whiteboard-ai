@@ -1,17 +1,76 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AdaptivePointFilter, PinchGate, isIPhoneCamera, pickCameraDevice } from '../tracking.mjs';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, pinchRatio, pickDrawingHandIndex, isIPhoneCamera, pickCameraDevice } from '../tracking.mjs';
 
-test('a held pinch stays on through short landmark flicker and turns off after release', () => {
+function makeHand(pose = 'palm', offsetX = 0) {
+  const hand = Array.from({ length: 21 }, () => ({ x: .5 + offsetX, y: .7 }));
+  hand[0] = { x: .5 + offsetX, y: .88 };
+  hand[4] = { x: .2 + offsetX, y: .48 };
+  [5,9,13,17].forEach((mcp, finger) => {
+    const x = .32 + finger * .12 + offsetX;
+    const extended = pose === 'palm' || (pose === 'point' && finger === 0);
+    hand[mcp] = { x, y: .55 };
+    hand[mcp + 1] = { x, y: .42 };
+    hand[mcp + 2] = { x, y: extended ? .32 : .53 };
+    hand[mcp + 3] = { x, y: extended ? .22 : .61 };
+  });
+  return hand;
+}
+
+test('drawing starts only at a close fingertip touch and stops on the first released frame', () => {
   const gate = new PinchGate();
-  assert.equal(gate.update(1.2, 0), false);
-  assert.equal(gate.update(.4, 20), true);
-  assert.equal(gate.update(.95, 40), true);
-  assert.equal(gate.update(.6, 120), true);
-  assert.equal(gate.update(.4, 150), true);
-  assert.equal(gate.update(1.1, 200), true);
-  assert.equal(gate.update(1.1, 350), true);
-  assert.equal(gate.update(1.1, 390), false);
+  const hand = makeHand();
+  assert.equal(gate.update(pinchRatio(hand)), false);
+  hand[4] = { x: hand[8].x + .06, y: hand[8].y };
+  assert.equal(gate.update(pinchRatio(hand)), true);
+  hand[4] = { x: hand[8].x + .13, y: hand[8].y };
+  assert.equal(gate.update(pinchRatio(hand)), false);
+  assert.equal(gate.update(.25), false);
+  assert.equal(gate.update(.34), false);
+  assert.equal(gate.update(.2), true);
+  assert.equal(gate.update(NaN), false);
+});
+
+test('point, fist, and open palm remain distinct in either camera orientation', () => {
+  for (const pose of ['point', 'fist', 'palm']) {
+    const hand = makeHand(pose);
+    assert.equal(classifyHandPose(hand), pose);
+    const rotated = hand.map(({ x, y }) => ({ x: 1 - y, y: x }));
+    assert.equal(classifyHandPose(rotated), pose);
+  }
+  const imperfectFist = makeHand('fist');
+  imperfectFist[19] = { x: imperfectFist[18].x, y: .32 };
+  imperfectFist[20] = { x: imperfectFist[18].x, y: .22 };
+  assert.equal(classifyHandPose(imperfectFist), 'fist');
+  const imperfectPalm = makeHand('palm');
+  imperfectPalm[19] = { x: imperfectPalm[18].x, y: .53 };
+  imperfectPalm[20] = { x: imperfectPalm[18].x, y: .61 };
+  assert.equal(classifyHandPose(imperfectPalm), 'palm');
+});
+
+test('offhand pointer changes color once and held fist undoes once', () => {
+  const gesture = new OffhandGesture();
+  const point = makeHand('point');
+  const fist = makeHand('fist');
+  assert.equal(gesture.update(point, 100).action, null);
+  const unclear = makeHand('point');
+  unclear[8] = { x: unclear[8].x + .16, y: unclear[8].y + .16 };
+  assert.equal(gesture.update(unclear, 175).action, null);
+  assert.equal(gesture.update(point, 749).action, null);
+  assert.equal(gesture.update(point, 750).action, 'color');
+  assert.equal(gesture.update(point, 1400).action, null);
+  assert.equal(gesture.update(fist, 1500).action, null);
+  assert.equal(gesture.update(fist, 1850).action, 'undo');
+  assert.equal(gesture.update(fist, 2500).action, null);
+  assert.equal(gesture.update(makeHand('palm'), 2600).pause, true);
+});
+
+test('a pinched hand remains the drawing hand when the other hand points', () => {
+  const pointer = makeHand('point', -.18);
+  const drawing = makeHand('palm', .18);
+  drawing[4] = { ...drawing[8] };
+  assert.equal(pickDrawingHandIndex([pointer, drawing], pointer[0]), 1);
+  assert.equal(pickDrawingHandIndex([drawing, pointer], pointer[0]), 0);
 });
 
 test('camera selection keeps computer and iPhone sources separate', () => {

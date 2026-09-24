@@ -1,4 +1,4 @@
-import { AdaptivePointFilter, PinchGate, isIPhoneCamera, pickCameraDevice } from './tracking.mjs';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, pickDrawingHandIndex, pinchRatio, isIPhoneCamera, pickCameraDevice } from './tracking.mjs';
 import { createPdfFromJpeg } from './pdf.mjs';
 import { createCloud, isFirebaseConfigured } from './cloud.mjs';
 import { firebaseConfig } from './firebase-config.js';
@@ -21,7 +21,7 @@ const state = {
   mode: 'computer', stream: null, landmarker: null, running: false, frameId: 0,
   lastVideoTime: -1, dominantWrist: null, lastHandSeenAt: 0,
   pinchGate: new PinchGate(), pointFilter: new AdaptivePointFilter(), pendingCameraStart: null,
-  offhandWasFist: false, offhandPointStart: 0, lastGestureAt: 0,
+  offhandGesture: new OffhandGesture(), lastGestureAt: 0,
   wavePoints: [], cameraId: '', pencil: false, cameraToken: 0
 };
 let cloud = null;
@@ -448,14 +448,14 @@ $('#captureButton').addEventListener('click', async () => {
 
 function setMode(mode) {
   if (state.mode === mode) return;
-  finishStroke(); state.pinchGate.reset(); state.pointFilter.reset(); state.pendingCameraStart = null;
+  finishStroke(); state.pinchGate.reset(); state.pointFilter.reset(); state.offhandGesture.reset(); state.pendingCameraStart = null;
   state.mode = mode; state.cameraId = '';
   document.querySelectorAll('[data-mode]').forEach(button => button.classList.toggle('is-active', button.dataset.mode === mode));
   $('#cameraBox').classList.toggle('mirrored', mode === 'computer');
   $('#modeDescription').textContent = mode === 'iphone'
     ? 'Point your iPhone at your hands or desk. On a Mac, connect it with Continuity Camera first.'
-    : 'Face your computer camera. Pinch and keep your fingers together while moving to draw.';
-  $('#gestureHint').textContent = 'Pinch and hold to draw · release to stop';
+    : 'Face your computer camera. Touch thumb and index tips to draw; separate them to stop immediately.';
+  $('#gestureHint').textContent = 'Touch fingertips to draw · separate to stop';
   updateCameraList();
   if (state.running) restartCamera();
 }
@@ -543,7 +543,7 @@ async function startCamera() {
 function stopCamera() {
   state.cameraToken++;
   state.running = false; cancelAnimationFrame(state.frameId); finishStroke();
-  state.pinchGate.reset(); state.pointFilter.reset(); state.pendingCameraStart = null; state.lastHandSeenAt = 0; state.dominantWrist = null;
+  state.pinchGate.reset(); state.pointFilter.reset(); state.offhandGesture.reset(); state.pendingCameraStart = null; state.lastHandSeenAt = 0; state.dominantWrist = null;
   state.stream?.getTracks().forEach(track => track.stop()); state.stream = null;
   video.srcObject = null; overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
   cursor.style.display = 'none'; $('#cameraBox').classList.remove('active');
@@ -555,21 +555,12 @@ function restartCamera() { stopCamera(); startCamera(); }
 $('#cameraButton').addEventListener('click', () => state.running ? stopCamera() : startCamera());
 
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-const isExtended = (hand, tip, pip) => distance(hand[tip], hand[0]) > distance(hand[pip], hand[0]) * 1.1;
-function fingerCount(hand) { return [[8,6],[12,10],[16,14],[20,18]].filter(([tip,pip]) => isExtended(hand,tip,pip)).length; }
-function pinchRatio(hand) {
-  const palmWidth = distance(hand[5], hand[17]);
-  return distance(hand[4], hand[8]) / Math.max(palmWidth, .001);
-}
 
 function chooseHands(hands) {
-  if (!hands.length) return [null, null];
-  if (hands.length === 1) { state.dominantWrist = hands[0][0]; return [hands[0], null]; }
-  let index = 0;
-  if (state.dominantWrist) index = distance(hands[1][0], state.dominantWrist) < distance(hands[0][0], state.dominantWrist) ? 1 : 0;
-  else index = hands[0][0].x > hands[1][0].x ? 0 : 1;
+  const index = pickDrawingHandIndex(hands, state.dominantWrist);
+  if (index < 0) return [null, null];
   state.dominantWrist = hands[index][0];
-  return [hands[index], hands[1-index]];
+  return [hands[index], hands.length === 2 ? hands[1-index] : null];
 }
 
 const markerCanvas = document.createElement('canvas'); markerCanvas.width = 160; markerCanvas.height = 90;
@@ -596,21 +587,14 @@ function mapToBoard(point) {
 }
 
 function handleOffhand(hand, now) {
-  if (!hand) { state.offhandWasFist = false; state.offhandPointStart = 0; return false; }
-  const count = fingerCount(hand), palm = count >= 4, fist = count <= 1;
-  if (fist) state.offhandWasFist = true;
-  if (palm && state.offhandWasFist && now-state.lastGestureAt>1200) {
-    state.offhandWasFist = false; state.lastGestureAt = now; undo(); toast('Undid last stroke');
+  const gesture = state.offhandGesture.update(hand, now);
+  if (gesture.action === 'undo') {
+    state.lastGestureAt = now; undo(); toast('Undid last stroke');
+  } else if (gesture.action === 'color') {
+    const next = (colors.indexOf(state.color) + 1) % colors.length;
+    state.lastGestureAt = now; setColor(colors[next]); toast('Color changed');
   }
-  const pointing = isExtended(hand,8,6) && !isExtended(hand,12,10) && !isExtended(hand,16,14) && !isExtended(hand,20,18);
-  if (pointing) {
-    if (!state.offhandPointStart) state.offhandPointStart = now;
-    if (now-state.offhandPointStart > 1000 && now-state.lastGestureAt>1200) {
-      const next = (colors.indexOf(state.color)+1)%colors.length;
-      setColor(colors[next]); state.lastGestureAt=now; state.offhandPointStart=0; toast('Color changed');
-    }
-  } else state.offhandPointStart=0;
-  return palm;
+  return gesture;
 }
 
 function handleWave(dominant, offhand, now) {
@@ -654,9 +638,7 @@ function processFrame() {
     const previousWrist=state.dominantWrist;
     const [dominant, offhand]=chooseHands(hands);
     if (!dominant) {
-      if (performance.now()-state.lastHandSeenAt > 240) {
-        finishStroke(); state.pendingCameraStart=null; state.pinchGate.reset(); state.pointFilter.reset(); state.dominantWrist=null;
-      }
+      finishStroke(); state.pendingCameraStart=null; state.pinchGate.reset(); state.pointFilter.reset(); state.offhandGesture.reset(); state.dominantWrist=null;
       cursor.style.display='none';setStatus('Looking for hands','live');return;
     }
     const now=performance.now();
@@ -665,13 +647,13 @@ function processFrame() {
     }
     state.lastHandSeenAt=now;
     handleWave(dominant,offhand,now);
-    const paused=handleOffhand(offhand,now);
+    const offhandGesture=handleOffhand(offhand,now);
     const marker=scanMarkers(dominant);
     const point=state.pointFilter.update(mapToBoard(marker || dominant[8]),now,mapToBoard(dominant[0]));
     if (state.pointFilter.discontinuity) { finishStroke(); state.pendingCameraStart=null; }
     const rect=canvas.getBoundingClientRect();
     cursor.style.display='block'; cursor.style.left=`${point.x*rect.width}px`; cursor.style.top=`${point.y*rect.height}px`;
-    const drawing=state.pinchGate.update(pinchRatio(dominant),now) && !paused && !$('#clearDialog').open;
+    const drawing=state.pinchGate.update(pinchRatio(dominant)) && !offhandGesture.pause && !$('#clearDialog').open;
     const tool=marker?.kind==='eraser' ? 'eraser' : marker?.kind==='tip' ? 'pen' : state.tool;
     cursor.classList.toggle('drawing',drawing);cursor.classList.toggle('eraser',tool==='eraser');
     if (drawing) {
@@ -682,7 +664,8 @@ function processFrame() {
         beginStroke(state.pendingCameraStart,tool); continueStroke(point); state.pendingCameraStart=null;
       }
     } else { finishStroke(); state.pendingCameraStart=null; }
-    setStatus(paused ? 'Paused by open palm' : drawing ? (tool==='eraser' ? 'Eraser on — move to erase' : 'Pen on — move to draw') : 'Pen off — pinch to draw','live');
+    const gestureHint=offhandGesture.pose==='point' ? ' · Hold pointer to change color' : offhandGesture.pose==='fist' ? ' · Hold fist to undo' : '';
+    setStatus((offhandGesture.pause ? 'Paused by open palm' : drawing ? (tool==='eraser' ? 'Eraser on — move to erase' : 'Pen on — move to draw') : 'Pen off — touch fingertips to draw') + gestureHint,'live');
   } catch (error) { console.error(error); stopCamera(); setStatus('Tracking stopped','error'); toast('Hand tracking stopped. Try restarting the camera.'); }
 }
 

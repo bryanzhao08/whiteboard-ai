@@ -4,8 +4,8 @@ MirrorBoard is a camera-powered whiteboard that also works with a mouse or touch
 
 ## Features
 
-- Track up to two hands with MediaPipe Hand Landmarker. Aim with your index finger; pinch thumb and index finger together and keep them together while moving to draw. Release to turn the pen off. Brief tracking flicker will not split a stroke, and a stationary pinch will not leave a dot. Adaptive cursor smoothing reduces hand landmark jitter while keeping deliberate movement responsive.
-- Use the other hand to pause (open palm), cycle ink colors (hold an index point), or undo (fist then open palm). A two-hand wave opens a clear confirmation.
+- Track up to two hands with MediaPipe Hand Landmarker. Aim with your index finger; touch thumb and index fingertips and move to draw. The pen turns off as soon as the fingertips separate or tracking loses the hand. A stationary pinch will not leave a dot. Adaptive cursor smoothing reduces hand landmark jitter while keeping deliberate movement responsive.
+- Use the other hand to pause (open palm), cycle ink colors (hold an index point for 650 ms), or undo (hold a fist for 350 ms). A two-hand wave opens a clear confirmation.
 - Optional marked-pencil tracking: a bright cyan marker near the tip moves a pen cursor; a pink marker near the eraser switches to erasing. Pinch while holding the pencil to make a mark. Marker tracking is experimental and depends on lighting and marker colors.
 - Draw with mouse or touch, choose colors and brush size, erase, undo, redo, clear, and export a PNG.
 - Export the board directly as an A4 PDF. PDF and PNG exports keep a white background even when dark mode is active.
@@ -45,10 +45,10 @@ The first time an account signs in without a cloud board, the current local boar
 | Action | Control |
 | --- | --- |
 | Draw | Mouse/touch drag, or hold a thumb-to-index pinch while moving on camera |
-| Move without drawing | Release the pinch; the pen turns off after a short flicker tolerance |
+| Move without drawing | Separate thumb and index fingertips; the pen turns off immediately |
 | Pause camera drawing | Show an open palm with your second hand |
-| Change color | Point with the second hand for one second |
-| Undo | Make a fist with the second hand, then open the palm |
+| Change color | Point with the second hand for 650 ms |
+| Undo | Hold a fist with the second hand for 350 ms |
 | Clear | Wave both hands, then confirm |
 | Keyboard | `P` pen, `E` eraser, `Ctrl/Cmd+Z` undo, `Ctrl/Cmd+Shift+Z` redo |
 

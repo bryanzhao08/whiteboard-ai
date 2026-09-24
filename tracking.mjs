@@ -1,29 +1,89 @@
+export const PINCH_TOUCH_THRESHOLD = 0.24;
+
 export class PinchGate {
-  constructor({ onThreshold = 0.52, offThreshold = 0.82, releaseMs = 180 } = {}) {
-    this.onThreshold = onThreshold;
-    this.offThreshold = offThreshold;
-    this.releaseMs = releaseMs;
+  constructor({ threshold = PINCH_TOUCH_THRESHOLD } = {}) {
+    this.threshold = threshold;
     this.active = false;
-    this.releaseStartedAt = null;
   }
 
-  update(ratio, now) {
-    if (ratio <= this.onThreshold) {
-      this.active = true;
-      this.releaseStartedAt = null;
-    } else if (this.active && ratio >= this.offThreshold) {
-      if (this.releaseStartedAt === null) this.releaseStartedAt = now;
-      if (now - this.releaseStartedAt >= this.releaseMs) this.reset();
-    } else {
-      this.releaseStartedAt = null;
-    }
+  update(ratio) {
+    this.active = Number.isFinite(ratio) && ratio <= this.threshold;
     return this.active;
   }
 
   reset() {
     this.active = false;
-    this.releaseStartedAt = null;
   }
+}
+
+const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+export function pinchRatio(hand) {
+  const palmSize = Math.max(distance(hand[5], hand[17]), distance(hand[0], hand[9]), .001);
+  return distance(hand[4], hand[8]) / palmSize;
+}
+
+function fingerExtended(hand, mcp, pip, dip, tip) {
+  const a = { x: hand[mcp].x - hand[pip].x, y: hand[mcp].y - hand[pip].y };
+  const b = { x: hand[dip].x - hand[pip].x, y: hand[dip].y - hand[pip].y };
+  const cosine = (a.x * b.x + a.y * b.y) / Math.max(Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y), 1e-6);
+  return cosine < -.82 && distance(hand[tip], hand[mcp]) > distance(hand[pip], hand[mcp]) * 1.35;
+}
+
+export function classifyHandPose(hand) {
+  if (!hand) return 'none';
+  const extended = [[5,6,7,8],[9,10,11,12],[13,14,15,16],[17,18,19,20]]
+    .map(indices => fingerExtended(hand, ...indices));
+  const count = extended.filter(Boolean).length;
+  if (count >= 3) return 'palm';
+  if (extended[0] && count === 1) return 'point';
+  if (!extended[0] && count <= 1) return 'fist';
+  return 'other';
+}
+
+export class OffhandGesture {
+  constructor({ pointHoldMs = 650, fistHoldMs = 350 } = {}) {
+    this.pointHoldMs = pointHoldMs;
+    this.fistHoldMs = fistHoldMs;
+    this.reset();
+  }
+
+  reset() {
+    this.pose = 'none';
+    this.since = 0;
+    this.lastSeenAt = 0;
+    this.fired = false;
+  }
+
+  update(hand, now) {
+    const observed = classifyHandPose(hand);
+    if (observed === 'other' && (this.pose === 'point' || this.pose === 'fist') && now - this.lastSeenAt <= 120) {
+      return { pose: this.pose, pause: false, action: null };
+    }
+    const pose = observed;
+    if (pose !== this.pose) {
+      this.pose = pose;
+      this.since = now;
+      this.fired = false;
+    }
+    this.lastSeenAt = now;
+    let action = null;
+    const holdMs = pose === 'point' ? this.pointHoldMs : pose === 'fist' ? this.fistHoldMs : Infinity;
+    if (!this.fired && now - this.since >= holdMs) {
+      action = pose === 'point' ? 'color' : 'undo';
+      this.fired = true;
+    }
+    return { pose, pause: pose === 'palm', action };
+  }
+}
+
+export function pickDrawingHandIndex(hands, previousWrist = null) {
+  if (!hands.length) return -1;
+  if (hands.length === 1) return 0;
+  const pinched = hands.map(hand => pinchRatio(hand) <= PINCH_TOUCH_THRESHOLD);
+  if (pinched[0] !== pinched[1]) return pinched[0] ? 0 : 1;
+  if (previousWrist) return distance(hands[0][0], previousWrist) <= distance(hands[1][0], previousWrist) ? 0 : 1;
+  return hands[0][0].x > hands[1][0].x ? 0 : 1;
 }
 
 // A One Euro filter: steady hands get stronger smoothing while deliberate motion

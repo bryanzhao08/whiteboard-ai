@@ -7,3 +7,5 @@
 :root[data-theme="dark"] .size-control output{color:#b8d8d0}:root[data-theme="dark"] .size-control{color:#a7bab9}@media(max-width:380px){.brand>span:last-child{display:none}.top-actions .account-button{max-width:74px}}
 
 .recognition-label{display:block;margin:0 0 7px}.notes-panel #recognitionMode{width:100%;margin-bottom:8px}.recognition-hint{font-size:11px;line-height:1.45;color:#889499;margin:0 0 13px}:root[data-theme="dark"] .recognition-hint{color:#9cafb0}
+
+.camera-box.is-mirrored video,.camera-box.is-mirrored canvas{transform:scaleX(-1)}.camera-panel #cameraModeSelect{margin-bottom:12px}.refresh-cameras{display:block;border:0;background:none;color:#315c66;font-size:12px;font-weight:700;padding:8px 0 10px;text-decoration:underline;text-underline-offset:3px}.refresh-cameras:hover{color:#193e49}.refresh-cameras:disabled{opacity:.5;cursor:wait}:root[data-theme="dark"] .refresh-cameras{color:#a9d3ce}

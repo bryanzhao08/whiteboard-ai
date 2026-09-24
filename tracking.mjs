@@ -166,18 +166,25 @@ export function pickCameraDevice(devices, mode, selectedId = '', onIPhone = fals
   return matching.find(device => /built-in|facetime|integrated|macbook|display/i.test(device.label)) || matching[0] || null;
 }
 
-export async function findCameraWithPermission(mediaDevices, mode, selectedId = '', onIPhone = false) {
-  let devices = await mediaDevices.enumerateDevices();
-  let selected = pickCameraDevice(devices, mode, selectedId, onIPhone);
-  if (mode !== 'iphone' || selected) return selected;
-  // Camera labels may only be exposed while an authorized stream is active.
+export async function listCameraDevicesWithPermission(mediaDevices, force = false, initialDevices = null) {
+  let devices = initialDevices || await mediaDevices.enumerateDevices();
+  if (!force && devices.some(device => device.kind === 'videoinput' && device.label)) return devices;
+  // Keep the permission stream alive until labels and Continuity Camera appear.
   const permissionStream = await mediaDevices.getUserMedia({ audio: false, video: true });
   try {
     devices = await mediaDevices.enumerateDevices();
-    selected = pickCameraDevice(devices, mode, selectedId, onIPhone);
   } finally {
     permissionStream.getTracks().forEach(track => track.stop());
   }
+  return devices;
+}
+
+export async function findCameraWithPermission(mediaDevices, mode, selectedId = '', onIPhone = false) {
+  let devices = await mediaDevices.enumerateDevices();
+  let selected = pickCameraDevice(devices, mode, selectedId, onIPhone);
+  if (selected && selected.label) return selected;
+  devices = await listCameraDevicesWithPermission(mediaDevices, true, devices);
+  selected = pickCameraDevice(devices, mode, selectedId, onIPhone);
   return selected;
 }
 
@@ -201,8 +208,9 @@ export async function requestWideZoom(track, target = .5) {
   } catch { return 'unavailable'; }
 }
 
-export function mapCameraPoint(point) {
-  return { x: Math.max(0, Math.min(1, (point.x - .06) / .88)), y: Math.max(0, Math.min(1, (point.y - .06) / .88)) };
+export function mapCameraPoint(point, mirrored = false) {
+  const x = mirrored ? 1 - point.x : point.x;
+  return { x: Math.max(0, Math.min(1, (x - .06) / .88)), y: Math.max(0, Math.min(1, (point.y - .06) / .88)) };
 }
 
 export function classifyPencilPixel(r, g, b) {

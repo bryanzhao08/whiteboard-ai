@@ -1,6 +1,6 @@
 # whiteboard-ai
 
-MirrorBoard is a camera-powered whiteboard that also works with a mouse or touch. It opens in **Computer camera** mode with an unmirrored webcam preview. Switch to **iPhone camera** to point your phone at your hands or work surface. On a Mac, iPhone mode selects an iPhone connected through Continuity Camera; it does not silently fall back to the computer webcam. On an iPhone, it requests the rear camera.
+MirrorBoard is a camera-powered whiteboard that also works with a mouse or touch. It opens in **Computer camera** mode with a mirrored webcam preview; the board cursor follows that view. Switch to **iPhone camera** for an unmirrored view of your hands or work surface. On a Mac, iPhone mode selects an iPhone connected through Continuity Camera; it does not silently fall back to the computer webcam. On an iPhone, it requests the rear camera.
 
 ## Features
 
@@ -24,7 +24,7 @@ python3 -m http.server 8000
 
 Open <http://localhost:8000>. Camera access requires localhost or HTTPS. The first camera use downloads the MediaPipe model and runtime. The first cursive recognition downloads a pretrained handwriting model (tens of MB); printed-text recognition downloads Tesseract and English data. An internet connection is required for those first downloads. Mouse and touch drawing work without them.
 
-To use the iPhone camera on a Mac, set up [Apple Continuity Camera](https://support.apple.com/en-us/102546). Keep the iPhone nearby and locked, with Wi-Fi, Bluetooth, and Continuity Camera enabled. Select **iPhone camera** in MirrorBoard, then press **Start camera**. The browser may first ask for ordinary camera permission so MirrorBoard can reveal device labels. It then selects the iPhone by its exact device ID; it will not silently switch to the Mac webcam. The camera list updates when devices connect or disconnect.
+To use the iPhone camera on a Mac, set up [Apple Continuity Camera](https://support.apple.com/en-us/102546). Keep the iPhone nearby and locked, with Wi-Fi, Bluetooth, and Continuity Camera enabled. Select **iPhone camera** in the camera panel or above the board, then press **Find cameras** and **Start camera**. The browser may first ask for ordinary camera permission so MirrorBoard can reveal device labels. It then selects the iPhone by its exact device ID and shows the active source in the menu; it will not silently switch to the Mac webcam. The camera list updates when devices connect or disconnect.
 
 If the iPhone is listed but its preview stays blank, unlock and lock it again, reconnect it, or try a USB connection, then restart the camera. MirrorBoard reports a stream that delivers no video frames. If you open MirrorBoard directly on an iPhone, iPhone mode uses its rear camera.
 

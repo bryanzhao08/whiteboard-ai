@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, pinchRatio, pickDrawingHandIndex, isIPhoneCamera, pickCameraDevice, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame, requestWideZoom, classifyPencilPixel, findPencilMarker, mapCameraPoint } from '../tracking.mjs';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, pinchRatio, pickDrawingHandIndex, isIPhoneCamera, pickCameraDevice, listCameraDevicesWithPermission, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame, requestWideZoom, classifyPencilPixel, findPencilMarker, mapCameraPoint } from '../tracking.mjs';
 
 function makeHand(pose = 'palm', offsetX = 0) {
   const hand = Array.from({ length: 21 }, () => ({ x: .5 + offsetX, y: .7 }));
@@ -109,9 +109,11 @@ test('0.5x uses physical camera zoom when available and reports its limit otherw
   assert.equal(await requestWideZoom(track), 'requested');
 });
 
-test('unmirrored camera coordinates move in the same direction on the board', () => {
+test('computer mirror follows the preview while iPhone coordinates stay unmirrored', () => {
   assert.ok(mapCameraPoint({ x: .8, y: .5 }).x > mapCameraPoint({ x: .2, y: .5 }).x);
   assert.equal(mapCameraPoint({ x: .5, y: .5 }).x, .5);
+  assert.ok(mapCameraPoint({ x: .8, y: .5 }, true).x < mapCameraPoint({ x: .2, y: .5 }, true).x);
+  assert.equal(mapCameraPoint({ x: .5, y: .5 }, true).x, .5);
 });
 
 test('neon red tip draws and pink end erases without mistaking skin for a marker', () => {
@@ -158,6 +160,49 @@ test('Continuity Camera is enumerated while the permission stream is still activ
   const selected = await findCameraWithPermission(mediaDevices, 'iphone');
   assert.equal(selected.deviceId, 'phone');
   assert.deepEqual(events, ['enumerate', 'permission', 'enumerate', 'stop']);
+});
+
+test('camera discovery reveals labels before selecting a computer camera', async () => {
+  let permissionOpen = false;
+  const mediaDevices = {
+    async enumerateDevices() {
+      return permissionOpen
+        ? [
+            { kind: 'videoinput', deviceId: 'phone', label: 'iPhone Camera' },
+            { kind: 'videoinput', deviceId: 'mac', label: 'FaceTime HD Camera' },
+          ]
+        : [
+            { kind: 'videoinput', deviceId: 'phone', label: '' },
+            { kind: 'videoinput', deviceId: 'mac', label: '' },
+          ];
+    },
+    async getUserMedia() {
+      permissionOpen = true;
+      return { getTracks: () => [{ stop: () => { permissionOpen = false; } }] };
+    },
+  };
+  assert.equal((await findCameraWithPermission(mediaDevices, 'computer'))?.deviceId, 'mac');
+  const discovered = await listCameraDevicesWithPermission(mediaDevices, true);
+  assert.equal(discovered.find(device => device.deviceId === 'phone')?.label, 'iPhone Camera');
+});
+
+test('iPhone discovery retries while the computer camera label is already known', async () => {
+  let permissionOpen = false;
+  const mediaDevices = {
+    async enumerateDevices() {
+      return permissionOpen
+        ? [
+            { kind: 'videoinput', deviceId: 'mac', label: 'FaceTime HD Camera' },
+            { kind: 'videoinput', deviceId: 'phone', label: 'Continuity Camera' },
+          ]
+        : [{ kind: 'videoinput', deviceId: 'mac', label: 'FaceTime HD Camera' }];
+    },
+    async getUserMedia() {
+      permissionOpen = true;
+      return { getTracks: () => [{ stop: () => { permissionOpen = false; } }] };
+    },
+  };
+  assert.equal((await findCameraWithPermission(mediaDevices, 'iphone'))?.deviceId, 'phone');
 });
 
 test('camera startup waits for real frames and reports a stalled stream', async () => {

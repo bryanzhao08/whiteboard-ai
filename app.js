@@ -1,4 +1,4 @@
-import { AdaptivePointFilter, OffhandGesture, PinchGate, pickDrawingHandIndex, pinchRatio, isIPhoneCamera, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame, requestWideZoom, findPencilMarker, mapCameraPoint } from './tracking.mjs?v=20260924-wide-pencil';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, pickDrawingHandIndex, pinchRatio, isIPhoneCamera, listCameraDevicesWithPermission, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame, requestWideZoom, findPencilMarker, mapCameraPoint } from './tracking.mjs?v=20260924-camera-modes';
 import { createPdfFromJpeg } from './pdf.mjs';
 import { createCloud, isFirebaseConfigured } from './cloud.mjs';
 import { firebaseConfig } from './firebase-config.js';
@@ -534,32 +534,58 @@ function setMode(mode) {
   finishStroke(); state.pinchGate.reset(); state.pointFilter.reset(); state.offhandGesture.reset(); state.pendingCameraStart = null;
   state.mode = mode; state.cameraId = '';
   document.querySelectorAll('[data-mode]').forEach(button => button.classList.toggle('is-active', button.dataset.mode === mode));
+  $('#cameraModeSelect').value = mode;
+  $('#cameraBox').classList.toggle('is-mirrored', mode === 'computer');
   $('#modeDescription').textContent = mode === 'iphone'
       ? 'On a Mac, lock your nearby iPhone and select its Continuity Camera below. On iPhone, use the rear camera.'
-    : 'Face your computer camera. Touch thumb and index tips to draw; separate them to stop immediately.';
+    : 'Computer camera preview is mirrored. Touch thumb and index tips to draw; separate them to stop immediately.';
   $('#gestureHint').textContent = 'Touch fingertips to draw · separate to stop';
   updateCameraList();
-  if (state.running) restartCamera();
+  if (state.running || $('#cameraButton').disabled) restartCamera();
 }
 document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
+$('#cameraModeSelect').addEventListener('change', event => setMode(event.target.value));
 $('#pencilToggle').addEventListener('change', event => { state.pencil = event.target.checked; toast(state.pencil ? 'Pencil marker tracking on' : 'Pencil marker tracking off'); });
-$('#cameraSelect').addEventListener('change', event => { state.cameraId = event.target.value; if (state.running) restartCamera(); });
+$('#cameraSelect').addEventListener('change', event => { state.cameraId = event.target.value; if (state.running || $('#cameraButton').disabled) restartCamera(); });
 
 const isOnIPhone = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 
-async function updateCameraList() {
+async function updateCameraList(providedDevices = null) {
   if (!navigator.mediaDevices?.enumerateDevices) return;
   try {
-    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput');
+    const devices = (Array.isArray(providedDevices) ? providedDevices : await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput');
     const select = $('#cameraSelect');
-    const defaultLabel = state.mode === 'iphone' ? (isOnIPhone ? 'iPhone rear camera' : 'Auto-detect Continuity Camera') : 'Default computer camera';
+    const matching = devices.filter(device => device.label && (state.mode === 'iphone' ? isOnIPhone || isIPhoneCamera(device) : !isIPhoneCamera(device)));
+    const labelsAvailable = devices.some(device => device.label);
+    const defaultLabel = state.mode === 'iphone'
+      ? isOnIPhone ? 'Auto-select rear camera' : matching.length ? 'Auto-select iPhone camera' : labelsAvailable ? 'iPhone camera not found — Find cameras' : 'Find cameras to detect iPhone'
+      : matching.length ? 'Auto-select computer camera' : 'Find cameras to identify sources';
     select.replaceChildren(new Option(defaultLabel, ''));
-    const matching = devices.filter(device => state.mode === 'iphone' ? isOnIPhone || isIPhoneCamera(device) : !isIPhoneCamera(device));
-    matching.forEach((device, index) => select.add(new Option(device.label || `Camera ${index + 1}`, device.deviceId)));
+    matching.forEach(device => select.add(new Option(device.label, device.deviceId)));
     select.value = matching.some(device => device.deviceId === state.cameraId) ? state.cameraId : '';
   } catch { /* Device labels may remain hidden until permission is granted. */ }
 }
-navigator.mediaDevices?.addEventListener?.('devicechange', updateCameraList);
+navigator.mediaDevices?.addEventListener?.('devicechange', () => updateCameraList());
+$('#refreshCameras').addEventListener('click', async () => {
+  const button = $('#refreshCameras');
+  button.disabled = true;
+  let timeout;
+  try {
+    const devices = await Promise.race([
+      listCameraDevicesWithPermission(navigator.mediaDevices, true),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Camera permission timed out')), 20000); })
+    ]);
+    await updateCameraList(devices);
+    const found = devices.some(device => device.kind === 'videoinput' && device.label && (state.mode === 'iphone' ? isOnIPhone || isIPhoneCamera(device) : !isIPhoneCamera(device)));
+    toast(found ? 'Camera list updated' : state.mode === 'iphone' ? 'No iPhone camera found. Lock your phone and keep it nearby.' : 'No computer camera found');
+  } catch (error) {
+    console.error(error);
+    toast(error.name === 'NotAllowedError' ? 'Allow camera access to list devices' : error.message === 'Camera permission timed out' ? 'Camera permission is still waiting; check your browser prompt' : 'Could not refresh cameras');
+  } finally {
+    clearTimeout(timeout);
+    button.disabled = false;
+  }
+});
 
 async function loadLandmarker() {
   if (state.landmarker) return state.landmarker;
@@ -594,6 +620,7 @@ async function startCamera() {
       throw Object.assign(new Error('Selected camera is not an iPhone'), { name: 'IPhoneCameraNotFound' });
     if (state.mode === 'computer' && activeLabel && isIPhoneCamera({ label: activeLabel }))
       throw Object.assign(new Error('Selected camera is an iPhone'), { name: 'ComputerCameraNotFound' });
+    if (selected?.deviceId) state.cameraId = selected.deviceId;
     const zoomStatus = await requestWideZoom(videoTrack);
     if (token !== state.cameraToken) return;
     $('#zoomStatus').textContent = /ultra[ -]?wide|0[.,]5\s?x/i.test(selected?.label || '') ? 'Ultra Wide camera selected (about 0.5×)'
@@ -662,7 +689,7 @@ function scanMarkers(hand) {
 }
 
 function mapToBoard(point) {
-  return mapCameraPoint(point);
+  return mapCameraPoint(point, state.mode === 'computer');
 }
 
 function handleOffhand(hand, now) {

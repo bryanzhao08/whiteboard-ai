@@ -1,4 +1,4 @@
-import { AdaptivePointFilter, OffhandGesture, PinchGate, pickDrawingHandIndex, pinchRatio, isIPhoneCamera, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame } from './tracking.mjs';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, pickDrawingHandIndex, pinchRatio, isIPhoneCamera, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame, requestWideZoom, findPencilMarker, mapCameraPoint } from './tracking.mjs?v=20260924-wide-pencil';
 import { createPdfFromJpeg } from './pdf.mjs';
 import { createCloud, isFirebaseConfigured } from './cloud.mjs';
 import { firebaseConfig } from './firebase-config.js';
@@ -451,7 +451,6 @@ function setMode(mode) {
   finishStroke(); state.pinchGate.reset(); state.pointFilter.reset(); state.offhandGesture.reset(); state.pendingCameraStart = null;
   state.mode = mode; state.cameraId = '';
   document.querySelectorAll('[data-mode]').forEach(button => button.classList.toggle('is-active', button.dataset.mode === mode));
-  $('#cameraBox').classList.toggle('mirrored', mode === 'computer');
   $('#modeDescription').textContent = mode === 'iphone'
       ? 'On a Mac, lock your nearby iPhone and select its Continuity Camera below. On iPhone, use the rear camera.'
     : 'Face your computer camera. Touch thumb and index tips to draw; separate them to stop immediately.';
@@ -512,6 +511,12 @@ async function startCamera() {
       throw Object.assign(new Error('Selected camera is not an iPhone'), { name: 'IPhoneCameraNotFound' });
     if (state.mode === 'computer' && activeLabel && isIPhoneCamera({ label: activeLabel }))
       throw Object.assign(new Error('Selected camera is an iPhone'), { name: 'ComputerCameraNotFound' });
+    const zoomStatus = await requestWideZoom(videoTrack);
+    if (token !== state.cameraToken) return;
+    $('#zoomStatus').textContent = /ultra[ -]?wide|0[.,]5\s?x/i.test(selected?.label || '') ? 'Ultra Wide camera selected (about 0.5×)'
+      : zoomStatus === 'active' ? '0.5× camera zoom active'
+      : zoomStatus === 'requested' ? '0.5× zoom requested; camera did not report its setting'
+      : state.mode === 'iphone' && !isOnIPhone ? 'Browser cannot set 0.5×. Use Mac Video Effects.' : 'Browser cannot set 0.5× on this camera';
     video.srcObject = stream;
     setStatus(state.mode === 'iphone' && !isOnIPhone ? 'Connecting Continuity Camera' : 'Connecting camera');
     await waitForVideoFrame(video);
@@ -522,7 +527,6 @@ async function startCamera() {
     if (token !== state.cameraToken) return;
     state.running = true; state.lastVideoTime = -1;
     $('#cameraBox').classList.add('active');
-    $('#cameraBox').classList.toggle('mirrored', state.mode === 'computer');
     $('#cameraButtonText').textContent = 'Stop camera'; $('#cameraButton').disabled = false;
     videoTrack?.addEventListener('ended', () => {
       if (state.stream !== stream) return;
@@ -548,6 +552,7 @@ function stopCamera() {
   state.stream?.getTracks().forEach(track => track.stop()); state.stream = null;
   video.srcObject = null; overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
   cursor.style.display = 'none'; $('#cameraBox').classList.remove('active');
+  $('#zoomStatus').textContent = '0.5× wide view requested when the camera supports it';
   $('#cameraButtonText').textContent = 'Start camera'; $('#cameraButton').disabled = false;
   setStatus('Camera off');
 }
@@ -570,21 +575,11 @@ function scanMarkers(hand) {
   if (!state.pencil) return null;
   markerCtx.drawImage(video, 0, 0, markerCanvas.width, markerCanvas.height);
   const pixels = markerCtx.getImageData(0, 0, markerCanvas.width, markerCanvas.height).data;
-  const found = { tip: {x:0,y:0,n:0}, eraser: {x:0,y:0,n:0} };
-  for (let y=0; y<90; y+=2) for (let x=0; x<160; x+=2) {
-    const i=(y*160+x)*4, r=pixels[i], g=pixels[i+1], b=pixels[i+2];
-    const nx=x/160, ny=y/90;
-    if (Math.hypot(nx-hand[8].x, ny-hand[8].y)>.28) continue;
-    const kind = b>95 && g>115 && g>r*1.25 && b>r*1.3 ? 'tip' : r>145 && r>g*1.26 && b>g*.75 && b>65 ? 'eraser' : null;
-    if (kind) { found[kind].x+=nx; found[kind].y+=ny; found[kind].n++; }
-  }
-  const kind = found.eraser.n>12 ? 'eraser' : found.tip.n>12 ? 'tip' : null;
-  return kind ? { kind, x:found[kind].x/found[kind].n, y:found[kind].y/found[kind].n } : null;
+  return findPencilMarker(pixels, markerCanvas.width, markerCanvas.height, hand);
 }
 
 function mapToBoard(point) {
-  const x = state.mode === 'computer' ? 1-point.x : point.x;
-  return { x: Math.max(0, Math.min(1, (x-.06)/.88)), y: Math.max(0, Math.min(1, (point.y-.06)/.88)) };
+  return mapCameraPoint(point);
 }
 
 function handleOffhand(hand, now) {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, pinchRatio, pickDrawingHandIndex, isIPhoneCamera, pickCameraDevice, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame } from '../tracking.mjs';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, pinchRatio, pickDrawingHandIndex, isIPhoneCamera, pickCameraDevice, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame, requestWideZoom, classifyPencilPixel, findPencilMarker, mapCameraPoint } from '../tracking.mjs';
 
 function makeHand(pose = 'palm', offsetX = 0) {
   const hand = Array.from({ length: 21 }, () => ({ x: .5 + offsetX, y: .7 }));
@@ -84,8 +84,59 @@ test('camera selection keeps computer and iPhone sources separate', () => {
   assert.equal(pickCameraDevice(devices, 'iphone', 'mac'), null);
   assert.equal(pickCameraDevice(devices.slice(1), 'iphone'), null);
   assert.equal(pickCameraDevice([{ kind: 'videoinput', deviceId: 'rear', label: 'Back Camera' }], 'iphone', '', true)?.deviceId, 'rear');
+  assert.equal(pickCameraDevice([
+    { kind: 'videoinput', deviceId: 'rear', label: 'Back Camera' },
+    { kind: 'videoinput', deviceId: 'wide', label: 'Back Ultra Wide Camera' },
+  ], 'iphone', '', true)?.deviceId, 'wide');
   assert.equal(cameraVideoConstraints(devices[0], 'iphone').deviceId.exact, 'phone');
   assert.equal(cameraVideoConstraints(null, 'iphone').facingMode, 'environment');
+  assert.equal(cameraVideoConstraints(devices[0], 'iphone').zoom.ideal, .5);
+});
+
+test('0.5x uses physical camera zoom when available and reports its limit otherwise', async () => {
+  let zoom = 1;
+  const track = {
+    getSettings: () => ({ zoom }),
+    getCapabilities: () => ({ zoom: { min: .5, max: 3 } }),
+    async applyConstraints({ advanced }) { zoom = advanced[0].zoom; },
+  };
+  assert.equal(await requestWideZoom(track), 'active');
+  assert.equal(zoom, .5);
+  track.getCapabilities = () => ({ zoom: { min: 1, max: 3 } });
+  zoom = 1;
+  assert.equal(await requestWideZoom(track), 'unavailable');
+  track.getCapabilities = () => ({});
+  assert.equal(await requestWideZoom(track), 'requested');
+});
+
+test('unmirrored camera coordinates move in the same direction on the board', () => {
+  assert.ok(mapCameraPoint({ x: .8, y: .5 }).x > mapCameraPoint({ x: .2, y: .5 }).x);
+  assert.equal(mapCameraPoint({ x: .5, y: .5 }).x, .5);
+});
+
+test('neon red tip draws and pink end erases without mistaking skin for a marker', () => {
+  assert.equal(classifyPencilPixel(245, 30, 20), 'tip');
+  assert.equal(classifyPencilPixel(245, 70, 170), 'eraser');
+  assert.equal(classifyPencilPixel(220, 170, 145), null);
+  assert.equal(classifyPencilPixel(245, 225, 30), null);
+  const width = 160, height = 90;
+  const pixels = new Uint8ClampedArray(width * height * 4);
+  const paint = (centerY, rgb) => {
+    for (let y = centerY - 4; y <= centerY + 4; y++) for (let x = 76; x <= 84; x++) {
+      const i = (y * width + x) * 4;
+      pixels.set([...rgb, 255], i);
+    }
+  };
+  const hand = makeHand();
+  hand[0] = { x: .5, y: .88 };
+  hand[8] = { x: .5, y: .48 };
+  paint(25, [245, 30, 20]);
+  paint(46, [245, 70, 170]);
+  assert.equal(findPencilMarker(pixels, width, height, hand)?.kind, 'tip');
+  pixels.fill(0);
+  paint(25, [245, 70, 170]);
+  paint(46, [245, 30, 20]);
+  assert.equal(findPencilMarker(pixels, width, height, hand)?.kind, 'eraser');
 });
 
 test('Continuity Camera is enumerated while the permission stream is still active', async () => {

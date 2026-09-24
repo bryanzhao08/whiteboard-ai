@@ -1,12 +1,13 @@
 # whiteboard-ai
 
-MirrorBoard is a camera-powered whiteboard that also works with a mouse or touch. It opens in **Computer camera** mode for a mirrored, front-facing webcam experience. Switch to **iPhone camera** to point your phone at your hands or work surface. On a Mac, iPhone mode selects an iPhone connected through Continuity Camera; it does not silently fall back to the computer webcam. On an iPhone, it requests the rear camera.
+MirrorBoard is a camera-powered whiteboard that also works with a mouse or touch. It opens in **Computer camera** mode with an unmirrored webcam preview. Switch to **iPhone camera** to point your phone at your hands or work surface. On a Mac, iPhone mode selects an iPhone connected through Continuity Camera; it does not silently fall back to the computer webcam. On an iPhone, it requests the rear camera.
 
 ## Features
 
 - Track up to two hands with MediaPipe Hand Landmarker. Aim with your index finger; touch thumb and index fingertips and move to draw. The pen turns off as soon as the fingertips separate or tracking loses the hand. A stationary pinch will not leave a dot. Adaptive cursor smoothing reduces hand landmark jitter while keeping deliberate movement responsive.
 - Use the other hand to pause (open palm), cycle ink colors (hold an index point for 650 ms), or undo (hold a fist for 350 ms). A two-hand wave opens a clear confirmation.
-- Optional marked-pencil tracking: a bright cyan marker near the tip moves a pen cursor; a pink marker near the eraser switches to erasing. Pinch while holding the pencil to make a mark. Marker tracking is experimental and depends on lighting and marker colors.
+- Optional marked-pencil tracking: a neon red marker near the front tip moves a pen cursor; a pink marker near the eraser end switches to erasing. Touch thumb and index fingertips while holding the pencil to make a mark. Marker tracking is experimental and depends on lighting and marker colors.
+- Request a real 0.5× wide camera view where the browser and camera support it. The camera panel reports whether 0.5× is active, requested without confirmation, or unavailable. On a Mac with Continuity Camera, use [Video Effects](https://support.apple.com/en-us/105117) to select 0.5× or Ultra Wide when the browser cannot set it.
 - Draw with mouse or touch, choose colors and brush size, erase, undo, redo, clear, and export a PNG.
 - Export the board directly as an A4 PDF. PDF and PNG exports keep a white background even when dark mode is active.
 - Switch between light and dark mode; the choice is saved in this browser. Rename the board to set its export filename.
@@ -56,6 +57,6 @@ The first time an account signs in without a cloud board, the current local boar
 
 ## Implementation notes
 
-The browser loads MediaPipe Tasks Vision 1.0.1 and Tesseract.js 5.1.1 from pinned CDN URLs. The hand model is loaded from Google's MediaPipe model storage. Hand landmarks are mapped from the camera frame to the board; Computer camera mode mirrors the horizontal axis. Pencil marker tracking uses simple color detection near the drawing hand and is an optional aid, not a trained pencil detector. OCR works best with large, clear writing and can be corrected in the note editor.
+The browser loads MediaPipe Tasks Vision 1.0.1 and Tesseract.js 5.1.1 from pinned CDN URLs. The hand model is loaded from Google's MediaPipe model storage. Hand landmarks are mapped from the unmirrored camera frame to the board. Pencil marker tracking uses simple color detection near the drawing hand and is an optional aid, not a trained pencil detector. OCR works best with large, clear writing and can be corrected in the note editor.
 
 Firebase Authentication and Firestore use the pinned Firebase JavaScript SDK 12.19.0 from Google's CDN when a config is present. Cloud sync stores text and vector strokes; it does not upload video. A single Firestore document backs the default board for each account, so extremely large boards may reach Firestore's document-size limit.

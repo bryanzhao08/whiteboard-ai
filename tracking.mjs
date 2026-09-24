@@ -157,6 +157,10 @@ export function pickCameraDevice(devices, mode, selectedId = '', onIPhone = fals
   const cameras = devices.filter(device => device.kind === 'videoinput');
   const matching = cameras.filter(device => mode === 'iphone' ? onIPhone || isIPhoneCamera(device) : !isIPhoneCamera(device));
   if (selectedId) return matching.find(device => device.deviceId === selectedId) || null;
+  if (mode === 'iphone') {
+    const ultraWide = matching.find(device => /ultra[ -]?wide|0[.,]5\s?x/i.test(device.label));
+    if (ultraWide) return ultraWide;
+  }
   if (mode === 'iphone' && onIPhone) return matching.find(device => /back|rear|environment/i.test(device.label)) || null;
   if (mode === 'iphone') return matching[0] || null;
   return matching.find(device => /built-in|facetime|integrated|macbook|display/i.test(device.label)) || matching[0] || null;
@@ -165,12 +169,12 @@ export function pickCameraDevice(devices, mode, selectedId = '', onIPhone = fals
 export async function findCameraWithPermission(mediaDevices, mode, selectedId = '', onIPhone = false) {
   let devices = await mediaDevices.enumerateDevices();
   let selected = pickCameraDevice(devices, mode, selectedId, onIPhone);
-  if (mode !== 'iphone' || onIPhone || selected) return selected;
+  if (mode !== 'iphone' || selected) return selected;
   // Camera labels may only be exposed while an authorized stream is active.
   const permissionStream = await mediaDevices.getUserMedia({ audio: false, video: true });
   try {
     devices = await mediaDevices.enumerateDevices();
-    selected = pickCameraDevice(devices, mode, selectedId);
+    selected = pickCameraDevice(devices, mode, selectedId, onIPhone);
   } finally {
     permissionStream.getTracks().forEach(track => track.stop());
   }
@@ -181,7 +185,46 @@ export function cameraVideoConstraints(selected, mode) {
   const source = selected?.deviceId
     ? { deviceId: { exact: selected.deviceId } }
     : { facingMode: mode === 'iphone' ? 'environment' : 'user' };
-  return { ...source, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } };
+  return { ...source, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 }, zoom: { ideal: .5 } };
+}
+
+export async function requestWideZoom(track, target = .5) {
+  const current = track?.getSettings?.().zoom;
+  if (typeof current === 'number' && Math.abs(current - target) < .05) return 'active';
+  const range = track?.getCapabilities?.().zoom;
+  if (!range || typeof range.min !== 'number' || typeof range.max !== 'number') return 'requested';
+  if (target < range.min || target > range.max || !track.applyConstraints) return 'unavailable';
+  try {
+    await track.applyConstraints({ advanced: [{ zoom: target }] });
+    const actual = track.getSettings?.().zoom;
+    return typeof actual === 'number' ? (Math.abs(actual - target) < .05 ? 'active' : 'unavailable') : 'requested';
+  } catch { return 'unavailable'; }
+}
+
+export function mapCameraPoint(point) {
+  return { x: Math.max(0, Math.min(1, (point.x - .06) / .88)), y: Math.max(0, Math.min(1, (point.y - .06) / .88)) };
+}
+
+export function classifyPencilPixel(r, g, b) {
+  if (r >= 165 && b >= r * .34 && b >= g * 1.13 && r >= g * 1.25) return 'eraser';
+  if (r >= 165 && r >= g * 1.65 && r >= b * 1.65) return 'tip';
+  return null;
+}
+
+export function findPencilMarker(pixels, width, height, hand) {
+  const found = { tip: { x: 0, y: 0, n: 0 }, eraser: { x: 0, y: 0, n: 0 } };
+  for (let y = 0; y < height; y += 2) for (let x = 0; x < width; x += 2) {
+    const nx = x / width, ny = y / height;
+    if (Math.hypot(nx - hand[8].x, ny - hand[8].y) > .28) continue;
+    const i = (y * width + x) * 4;
+    const kind = classifyPencilPixel(pixels[i], pixels[i + 1], pixels[i + 2]);
+    if (kind) { found[kind].x += nx; found[kind].y += ny; found[kind].n++; }
+  }
+  const candidates = ['tip', 'eraser'].filter(kind => found[kind].n >= 5).map(kind => ({
+    kind, x: found[kind].x / found[kind].n, y: found[kind].y / found[kind].n,
+  }));
+  if (candidates.length < 2) return candidates[0] || null;
+  return candidates.sort((a, b) => distance(b, hand[0]) - distance(a, hand[0]))[0];
 }
 
 export function waitForVideoFrame(video, timeoutMs = 7000) {

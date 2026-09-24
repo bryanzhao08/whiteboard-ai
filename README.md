@@ -1,10 +1,10 @@
 # whiteboard-ai
 
-MirrorBoard is a camera-powered whiteboard that also works with a mouse or touch. It opens in **Hands / desk** mode, for a camera pointed at your hands or work surface. Switch to **Air drawing** for a mirrored, front-facing webcam experience.
+MirrorBoard is a camera-powered whiteboard that also works with a mouse or touch. It opens in **Computer camera** mode for a mirrored, front-facing webcam experience. Switch to **iPhone camera** to point your phone at your hands or work surface. On a Mac, iPhone mode selects an iPhone connected through Continuity Camera; it does not silently fall back to the computer webcam. On an iPhone, it requests the rear camera.
 
 ## Features
 
-- Track up to two hands with MediaPipe Hand Landmarker. Aim with your index finger and pinch thumb to index finger to draw.
+- Track up to two hands with MediaPipe Hand Landmarker. Aim with your index finger; pinch thumb and index finger together and keep them together while moving to draw. Release to turn the pen off. Brief tracking flicker will not split a stroke, and a stationary pinch will not leave a dot.
 - Use the other hand to pause (open palm), cycle ink colors (hold an index point), or undo (fist then open palm). A two-hand wave opens a clear confirmation.
 - Optional marked-pencil tracking: a bright cyan marker near the tip moves a pen cursor; a pink marker near the eraser switches to erasing. Pinch while holding the pencil to make a mark. Marker tracking is experimental and depends on lighting and marker colors.
 - Draw with mouse or touch, choose colors and brush size, erase, undo, redo, clear, and export a PNG.
@@ -21,6 +21,8 @@ python3 -m http.server 8000
 
 Open <http://localhost:8000>. Camera access requires localhost or HTTPS. The first camera use downloads the MediaPipe model and runtime; note recognition downloads the Tesseract runtime and English data. An internet connection is required for those downloads. Mouse and touch drawing work without them.
 
+To use the iPhone camera on a Mac, set up [Apple Continuity Camera](https://support.apple.com/en-us/102546), then select **iPhone camera** in MirrorBoard and start the camera. The iPhone must appear as a camera source on your Mac. If you open MirrorBoard directly on an iPhone, iPhone mode uses its rear camera.
+
 ## Publish with GitHub Pages
 
 The site is static. In the repository's **Settings → Pages**, choose **Deploy from a branch**, then select `main` and `/ (root)`. Pages will provide an HTTPS URL, which supports camera permission.
@@ -29,8 +31,8 @@ The site is static. In the repository's **Settings → Pages**, choose **Deploy 
 
 | Action | Control |
 | --- | --- |
-| Draw | Mouse/touch drag, or pinch thumb and index finger on camera |
-| Move without drawing | Release the pinch |
+| Draw | Mouse/touch drag, or hold a thumb-to-index pinch while moving on camera |
+| Move without drawing | Release the pinch; the pen turns off after a short flicker tolerance |
 | Pause camera drawing | Show an open palm with your second hand |
 | Change color | Point with the second hand for one second |
 | Undo | Make a fist with the second hand, then open the palm |
@@ -39,4 +41,4 @@ The site is static. In the repository's **Settings → Pages**, choose **Deploy 
 
 ## Implementation notes
 
-The browser loads MediaPipe Tasks Vision 1.0.1 and Tesseract.js 5.1.1 from pinned CDN URLs. The hand model is loaded from Google's MediaPipe model storage. Hand landmarks are mapped from the camera frame to the board; Air mode mirrors the horizontal axis. Pencil marker tracking uses simple color detection near the drawing hand and is an optional aid, not a trained pencil detector. OCR works best with large, clear writing and can be corrected in the note editor.
+The browser loads MediaPipe Tasks Vision 1.0.1 and Tesseract.js 5.1.1 from pinned CDN URLs. The hand model is loaded from Google's MediaPipe model storage. Hand landmarks are mapped from the camera frame to the board; Computer camera mode mirrors the horizontal axis. Pencil marker tracking uses simple color detection near the drawing hand and is an optional aid, not a trained pencil detector. OCR works best with large, clear writing and can be corrected in the note editor.

@@ -1,3 +1,5 @@
+import { PinchGate, isIPhoneCamera, pickCameraDevice } from './tracking.mjs';
+
 const $ = (selector) => document.querySelector(selector);
 const canvas = $('#board');
 const ctx = canvas.getContext('2d');
@@ -10,8 +12,9 @@ const NOTES_KEY = 'mirrorboard-notes-v1';
 const colors = ['#172a33', '#e87355', '#5287ab', '#7b9871'];
 const state = {
   strokes: [], redo: [], notes: [], current: null, tool: 'pen', color: colors[0], size: 5,
-  mode: 'desk', stream: null, landmarker: null, running: false, frameId: 0,
-  lastVideoTime: -1, lastHandPoint: null, dominantWrist: null,
+  mode: 'computer', stream: null, landmarker: null, running: false, frameId: 0,
+  lastVideoTime: -1, dominantWrist: null, lastHandSeenAt: 0,
+  pinchGate: new PinchGate(), pendingCameraStart: null,
   offhandWasFist: false, offhandPointStart: 0, lastGestureAt: 0,
   wavePoints: [], cameraId: '', pencil: false, cameraToken: 0
 };
@@ -251,26 +254,33 @@ $('#captureButton').addEventListener('click', async () => {
 
 function setMode(mode) {
   if (state.mode === mode) return;
-  finishStroke(); state.mode = mode;
+  finishStroke(); state.pinchGate.reset(); state.pendingCameraStart = null;
+  state.mode = mode; state.cameraId = '';
   document.querySelectorAll('[data-mode]').forEach(button => button.classList.toggle('is-active', button.dataset.mode === mode));
-  $('#cameraBox').classList.toggle('mirrored', mode === 'air');
-  $('#modeDescription').textContent = mode === 'air'
-    ? 'Face your webcam. Move your index finger in the air to aim; pinch to draw.'
-    : 'Point a camera at your hands or desk. Move your index finger to aim; pinch to draw.';
-  $('#gestureHint').textContent = mode === 'air' ? 'Air mode: pinch to draw • release to move' : 'Desk mode: pinch to draw • release to move';
+  $('#cameraBox').classList.toggle('mirrored', mode === 'computer');
+  $('#modeDescription').textContent = mode === 'iphone'
+    ? 'Point your iPhone at your hands or desk. On a Mac, connect it with Continuity Camera first.'
+    : 'Face your computer camera. Pinch and keep your fingers together while moving to draw.';
+  $('#gestureHint').textContent = 'Pinch and hold to draw · release to stop';
+  updateCameraList();
   if (state.running) restartCamera();
 }
 document.querySelectorAll('[data-mode]').forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
 $('#pencilToggle').addEventListener('change', event => { state.pencil = event.target.checked; toast(state.pencil ? 'Pencil marker tracking on' : 'Pencil marker tracking off'); });
 $('#cameraSelect').addEventListener('change', event => { state.cameraId = event.target.value; if (state.running) restartCamera(); });
 
+const isOnIPhone = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+
 async function updateCameraList() {
   if (!navigator.mediaDevices?.enumerateDevices) return;
   try {
     const devices = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput');
-    const select = $('#cameraSelect'); select.replaceChildren(new Option('Default camera', ''));
-    devices.forEach((device, index) => select.add(new Option(device.label || `Camera ${index + 1}`, device.deviceId)));
-    select.value = state.cameraId;
+    const select = $('#cameraSelect');
+    const defaultLabel = state.mode === 'iphone' ? (isOnIPhone ? 'iPhone rear camera' : 'Auto-detect iPhone') : 'Default computer camera';
+    select.replaceChildren(new Option(defaultLabel, ''));
+    const matching = devices.filter(device => state.mode === 'iphone' ? isIPhoneCamera(device) : !isIPhoneCamera(device));
+    matching.forEach((device, index) => select.add(new Option(device.label || `Camera ${index + 1}`, device.deviceId)));
+    select.value = matching.some(device => device.deviceId === state.cameraId) ? state.cameraId : '';
   } catch { /* Device labels may remain hidden until permission is granted. */ }
 }
 
@@ -294,30 +304,52 @@ async function startCamera() {
   $('#cameraButtonText').textContent = 'Starting…'; $('#cameraButton').disabled = true;
   setStatus('Starting camera');
   try {
-    const constraints = state.cameraId ? { deviceId: { exact: state.cameraId } } : { facingMode: state.mode === 'air' ? 'user' : 'environment' };
+    let devices = await navigator.mediaDevices.enumerateDevices();
+    let selected = pickCameraDevice(devices, state.mode, state.cameraId);
+    if (state.mode === 'iphone' && !isOnIPhone && !selected) {
+      // Camera labels can be hidden until the browser has camera permission.
+      const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+      permissionStream.getTracks().forEach(track => track.stop());
+      if (token !== state.cameraToken) return;
+      devices = await navigator.mediaDevices.enumerateDevices();
+      selected = pickCameraDevice(devices, state.mode, state.cameraId);
+      if (!selected) throw Object.assign(new Error('iPhone camera unavailable'), { name: 'IPhoneCameraNotFound' });
+    }
+    const constraints = selected?.deviceId
+      ? { deviceId: { exact: selected.deviceId } }
+      : { facingMode: state.mode === 'iphone' ? 'environment' : 'user' };
     const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...constraints, width: { ideal: 1280 }, height: { ideal: 720 } } });
     if (token !== state.cameraToken) { stream.getTracks().forEach(track => track.stop()); return; }
-    state.stream = stream; video.srcObject = stream;
+    state.stream = stream;
+    const activeLabel = stream.getVideoTracks()[0]?.label || '';
+    if (state.mode === 'iphone' && !isOnIPhone && !isIPhoneCamera({ label: activeLabel }))
+      throw Object.assign(new Error('Selected camera is not an iPhone'), { name: 'IPhoneCameraNotFound' });
+    if (state.mode === 'computer' && isIPhoneCamera({ label: activeLabel }))
+      throw Object.assign(new Error('Selected camera is an iPhone'), { name: 'ComputerCameraNotFound' });
+    video.srcObject = stream;
     await video.play(); await updateCameraList();
     setStatus('Loading hand tracking');
     await loadLandmarker();
     if (token !== state.cameraToken) return;
     state.running = true; state.lastVideoTime = -1;
     $('#cameraBox').classList.add('active');
-    $('#cameraBox').classList.toggle('mirrored', state.mode === 'air');
+    $('#cameraBox').classList.toggle('mirrored', state.mode === 'computer');
     $('#cameraButtonText').textContent = 'Stop camera'; $('#cameraButton').disabled = false;
     setStatus('Looking for hands', 'live');
     processFrame();
   } catch (error) {
     console.error(error); stopCamera();
-    setStatus(error.name === 'NotAllowedError' ? 'Camera permission denied' : 'Camera could not start', 'error');
-    toast(error.name === 'NotAllowedError' ? 'Allow camera access and try again' : 'Check the camera and your connection');
+    const iphoneMissing = error.name === 'IPhoneCameraNotFound';
+    const computerMissing = error.name === 'ComputerCameraNotFound';
+    setStatus(iphoneMissing ? 'iPhone camera not found' : computerMissing ? 'Computer camera not found' : error.name === 'NotAllowedError' ? 'Camera permission denied' : 'Camera could not start', 'error');
+    toast(iphoneMissing ? 'Connect your iPhone with Continuity Camera, then try again' : computerMissing ? 'Choose a computer camera in Camera source' : error.name === 'NotAllowedError' ? 'Allow camera access and try again' : 'Check the camera and your connection');
   }
 }
 
 function stopCamera() {
   state.cameraToken++;
   state.running = false; cancelAnimationFrame(state.frameId); finishStroke();
+  state.pinchGate.reset(); state.pendingCameraStart = null; state.lastHandSeenAt = 0;
   state.stream?.getTracks().forEach(track => track.stop()); state.stream = null;
   video.srcObject = null; overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
   cursor.style.display = 'none'; $('#cameraBox').classList.remove('active');
@@ -331,9 +363,9 @@ $('#cameraButton').addEventListener('click', () => state.running ? stopCamera() 
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const isExtended = (hand, tip, pip) => distance(hand[tip], hand[0]) > distance(hand[pip], hand[0]) * 1.1;
 function fingerCount(hand) { return [[8,6],[12,10],[16,14],[20,18]].filter(([tip,pip]) => isExtended(hand,tip,pip)).length; }
-function isPinching(hand) {
+function pinchRatio(hand) {
   const palmWidth = distance(hand[5], hand[17]);
-  return distance(hand[4], hand[8]) < palmWidth * .36;
+  return distance(hand[4], hand[8]) / Math.max(palmWidth, .001);
 }
 
 function chooseHands(hands) {
@@ -365,7 +397,7 @@ function scanMarkers(hand) {
 }
 
 function mapToBoard(point) {
-  const x = state.mode === 'air' ? 1-point.x : point.x;
+  const x = state.mode === 'computer' ? 1-point.x : point.x;
   return { x: Math.max(0, Math.min(1, (x-.06)/.88)), y: Math.max(0, Math.min(1, (point.y-.06)/.88)) };
 }
 
@@ -426,22 +458,32 @@ function processFrame() {
     const hands=result.landmarks || [];
     drawLandmarks(hands);
     const [dominant, offhand]=chooseHands(hands);
-    if (!dominant) { finishStroke();cursor.style.display='none';setStatus('Looking for hands','live');return; }
+    if (!dominant) {
+      if (performance.now()-state.lastHandSeenAt > 240) {
+        finishStroke(); state.pendingCameraStart=null; state.pinchGate.reset();
+      }
+      cursor.style.display='none';setStatus('Looking for hands','live');return;
+    }
     const now=performance.now();
+    state.lastHandSeenAt=now;
     handleWave(dominant,offhand,now);
     const paused=handleOffhand(offhand,now);
     const marker=scanMarkers(dominant);
     const point=mapToBoard(marker || dominant[8]);
     const rect=canvas.getBoundingClientRect();
     cursor.style.display='block'; cursor.style.left=`${point.x*rect.width}px`; cursor.style.top=`${point.y*rect.height}px`;
-    const drawing=isPinching(dominant) && !paused && !$('#clearDialog').open;
+    const drawing=state.pinchGate.update(pinchRatio(dominant),now) && !paused && !$('#clearDialog').open;
     const tool=marker?.kind==='eraser' ? 'eraser' : marker?.kind==='tip' ? 'pen' : state.tool;
     cursor.classList.toggle('drawing',drawing);cursor.classList.toggle('eraser',tool==='eraser');
     if (drawing) {
-      if (!state.current || state.current.tool!==tool) beginStroke(point,tool);
-      else continueStroke(point);
-    } else finishStroke();
-    setStatus(paused ? 'Paused by open palm' : drawing ? (tool==='eraser' ? 'Erasing' : 'Drawing') : `${hands.length} hand${hands.length===1?'':'s'} tracked`,'live');
+      if (state.current?.tool!==tool) finishStroke();
+      if (state.current) continueStroke(point);
+      else if (!state.pendingCameraStart) state.pendingCameraStart=point;
+      else if (distance(point,state.pendingCameraStart)>.006) {
+        beginStroke(state.pendingCameraStart,tool); continueStroke(point); state.pendingCameraStart=null;
+      }
+    } else { finishStroke(); state.pendingCameraStart=null; }
+    setStatus(paused ? 'Paused by open palm' : drawing ? (tool==='eraser' ? 'Eraser on — move to erase' : 'Pen on — move to draw') : 'Pen off — pinch to draw','live');
   } catch (error) { console.error(error); stopCamera(); setStatus('Tracking stopped','error'); toast('Hand tracking stopped. Try restarting the camera.'); }
 }
 

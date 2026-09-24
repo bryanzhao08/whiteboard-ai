@@ -1,4 +1,4 @@
-import { PinchGate, isIPhoneCamera, pickCameraDevice } from './tracking.mjs';
+import { AdaptivePointFilter, PinchGate, isIPhoneCamera, pickCameraDevice } from './tracking.mjs';
 import { createPdfFromJpeg } from './pdf.mjs';
 import { createCloud, isFirebaseConfigured } from './cloud.mjs';
 import { firebaseConfig } from './firebase-config.js';
@@ -20,7 +20,7 @@ const state = {
   name: 'Untitled board', theme: 'light', user: null, cloudReady: false,
   mode: 'computer', stream: null, landmarker: null, running: false, frameId: 0,
   lastVideoTime: -1, dominantWrist: null, lastHandSeenAt: 0,
-  pinchGate: new PinchGate(), pendingCameraStart: null,
+  pinchGate: new PinchGate(), pointFilter: new AdaptivePointFilter(), pendingCameraStart: null,
   offhandWasFist: false, offhandPointStart: 0, lastGestureAt: 0,
   wavePoints: [], cameraId: '', pencil: false, cameraToken: 0
 };
@@ -139,6 +139,10 @@ function redraw() {
   ctx.clearRect(0, 0, width, height);
   for (const stroke of state.strokes) renderStroke(ctx, stroke, width, height);
   if (state.current) renderStroke(ctx, state.current, width, height);
+  updateBoardControls();
+}
+
+function updateBoardControls() {
   $('#emptyState').classList.toggle('hidden', state.strokes.length > 0 || !!state.current);
   $('#strokeCount').textContent = state.strokes.length;
   $('#undoButton').disabled = state.strokes.length === 0;
@@ -148,7 +152,9 @@ function redraw() {
 function beginStroke(point, tool = state.tool) {
   if (state.current) finishStroke();
   state.current = { tool, color: state.color, size: state.size, points: [point] };
-  redraw();
+  const { width, height } = canvas.getBoundingClientRect();
+  renderStroke(ctx, state.current, width, height);
+  updateBoardControls();
 }
 
 function continueStroke(point) {
@@ -156,7 +162,8 @@ function continueStroke(point) {
   const last = state.current.points.at(-1);
   if (Math.hypot(point.x - last.x, point.y - last.y) < .0015) return;
   state.current.points.push(point);
-  redraw();
+  const { width, height } = canvas.getBoundingClientRect();
+  renderStroke(ctx, { ...state.current, points: [last, point] }, width, height);
 }
 
 function finishStroke() {
@@ -164,7 +171,7 @@ function finishStroke() {
   state.strokes.push(state.current);
   state.current = null;
   state.redo = [];
-  redraw();
+  updateBoardControls();
   markSaved();
 }
 
@@ -441,7 +448,7 @@ $('#captureButton').addEventListener('click', async () => {
 
 function setMode(mode) {
   if (state.mode === mode) return;
-  finishStroke(); state.pinchGate.reset(); state.pendingCameraStart = null;
+  finishStroke(); state.pinchGate.reset(); state.pointFilter.reset(); state.pendingCameraStart = null;
   state.mode = mode; state.cameraId = '';
   document.querySelectorAll('[data-mode]').forEach(button => button.classList.toggle('is-active', button.dataset.mode === mode));
   $('#cameraBox').classList.toggle('mirrored', mode === 'computer');
@@ -505,7 +512,7 @@ async function startCamera() {
     const constraints = selected?.deviceId
       ? { deviceId: { exact: selected.deviceId } }
       : { facingMode: state.mode === 'iphone' ? 'environment' : 'user' };
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...constraints, width: { ideal: 1280 }, height: { ideal: 720 } } });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...constraints, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } } });
     if (token !== state.cameraToken) { stream.getTracks().forEach(track => track.stop()); return; }
     state.stream = stream;
     const activeLabel = stream.getVideoTracks()[0]?.label || '';
@@ -536,7 +543,7 @@ async function startCamera() {
 function stopCamera() {
   state.cameraToken++;
   state.running = false; cancelAnimationFrame(state.frameId); finishStroke();
-  state.pinchGate.reset(); state.pendingCameraStart = null; state.lastHandSeenAt = 0;
+  state.pinchGate.reset(); state.pointFilter.reset(); state.pendingCameraStart = null; state.lastHandSeenAt = 0; state.dominantWrist = null;
   state.stream?.getTracks().forEach(track => track.stop()); state.stream = null;
   video.srcObject = null; overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
   cursor.style.display = 'none'; $('#cameraBox').classList.remove('active');
@@ -644,19 +651,24 @@ function processFrame() {
     const result=state.landmarker.detectForVideo(video, performance.now());
     const hands=result.landmarks || [];
     drawLandmarks(hands);
+    const previousWrist=state.dominantWrist;
     const [dominant, offhand]=chooseHands(hands);
     if (!dominant) {
       if (performance.now()-state.lastHandSeenAt > 240) {
-        finishStroke(); state.pendingCameraStart=null; state.pinchGate.reset();
+        finishStroke(); state.pendingCameraStart=null; state.pinchGate.reset(); state.pointFilter.reset(); state.dominantWrist=null;
       }
       cursor.style.display='none';setStatus('Looking for hands','live');return;
     }
     const now=performance.now();
+    if (previousWrist && distance(previousWrist,dominant[0])>.22) {
+      finishStroke(); state.pendingCameraStart=null; state.pinchGate.reset(); state.pointFilter.reset();
+    }
     state.lastHandSeenAt=now;
     handleWave(dominant,offhand,now);
     const paused=handleOffhand(offhand,now);
     const marker=scanMarkers(dominant);
-    const point=mapToBoard(marker || dominant[8]);
+    const point=state.pointFilter.update(mapToBoard(marker || dominant[8]),now,mapToBoard(dominant[0]));
+    if (state.pointFilter.discontinuity) { finishStroke(); state.pendingCameraStart=null; }
     const rect=canvas.getBoundingClientRect();
     cursor.style.display='block'; cursor.style.left=`${point.x*rect.width}px`; cursor.style.top=`${point.y*rect.height}px`;
     const drawing=state.pinchGate.update(pinchRatio(dominant),now) && !paused && !$('#clearDialog').open;

@@ -4,7 +4,7 @@ MirrorBoard is a camera-powered whiteboard that also works with a mouse or touch
 
 ## Features
 
-- Track up to two hands with MediaPipe Hand Landmarker. Aim with your index finger; pinch thumb and index finger together and keep them together while moving to draw. Release to turn the pen off. Brief tracking flicker will not split a stroke, and a stationary pinch will not leave a dot.
+- Track up to two hands with MediaPipe Hand Landmarker. Aim with your index finger; pinch thumb and index finger together and keep them together while moving to draw. Release to turn the pen off. Brief tracking flicker will not split a stroke, and a stationary pinch will not leave a dot. Adaptive cursor smoothing reduces hand landmark jitter while keeping deliberate movement responsive.
 - Use the other hand to pause (open palm), cycle ink colors (hold an index point), or undo (fist then open palm). A two-hand wave opens a clear confirmation.
 - Optional marked-pencil tracking: a bright cyan marker near the tip moves a pen cursor; a pink marker near the eraser switches to erasing. Pinch while holding the pencil to make a mark. Marker tracking is experimental and depends on lighting and marker colors.
 - Draw with mouse or touch, choose colors and brush size, erase, undo, redo, clear, and export a PNG.

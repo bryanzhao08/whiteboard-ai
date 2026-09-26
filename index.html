@@ -7,10 +7,11 @@
     <meta name="description" content="A camera-powered whiteboard for drawing with your hands or a marked pencil, with on-device note recognition." />
     <title>MirrorBoard — Whiteboard AI</title>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-    <link rel="stylesheet" href="./style.css?v=20260926-clear" />
+    <link rel="stylesheet" href="./style.css?v=20260926-camera" />
   </head>
   <body>
     <div class="app-shell">
+      <div id="localFileNotice" class="launch-notice" hidden role="alert">Open the live app to use cameras and drawing. <a href="https://bryanzhao08.github.io/whiteboard-ai/">Open Whiteboard AI</a></div>
       <header class="topbar">
         <div class="brand" aria-label="MirrorBoard home"><span class="brand-mark">✳</span><span>mirrorboard<span class="brand-dot">.</span></span></div>
         <div class="session-label"><span class="session-dot"></span><input id="boardName" aria-label="Board name" maxlength="60" value="Untitled board" /><span class="save-state" id="saveState">Saved locally</span></div>
@@ -66,8 +67,9 @@
         <aside class="side-panel">
           <div class="panel-section camera-panel">
             <div class="section-heading"><div><span class="eyebrow">INPUT</span><h2>Camera studio</h2></div><span class="panel-spark">✦</span></div>
-            <div class="camera-box is-mirrored" id="cameraBox"><video id="cameraVideo" playsinline autoplay muted></video><canvas id="cameraOverlay"></canvas><div class="camera-placeholder" id="cameraPlaceholder"><span class="camera-glyph">◌</span><strong>Camera preview</strong><small>Your video stays on this device.</small></div><span class="live-badge" id="liveBadge">● LIVE</span></div>
-            <label class="field-label" for="cameraModeSelect">Camera type</label><select id="cameraModeSelect" aria-label="Camera type"><option value="computer">Computer camera (mirror)</option><option value="iphone">iPhone camera (unmirrored)</option></select>
+            <div class="camera-box" id="cameraBox"><video id="cameraVideo" playsinline autoplay muted></video><canvas id="cameraOverlay"></canvas><div class="camera-placeholder" id="cameraPlaceholder"><span class="camera-glyph">◌</span><strong>Camera preview</strong><small>Your video stays on this device.</small></div><span class="live-badge" id="liveBadge">● LIVE</span></div>
+            <label class="field-label" for="cameraModeSelect">Camera type</label><select id="cameraModeSelect" aria-label="Camera type"><option value="computer">Computer camera</option><option value="iphone">iPhone camera (unmirrored)</option></select>
+            <label class="toggle-row camera-mirror"><input id="mirrorComputer" type="checkbox" checked /> Mirror computer camera</label>
             <label class="field-label" for="cameraSelect">Camera source</label><select id="cameraSelect" aria-label="Camera source"><option value="">Default computer camera</option></select>
             <button class="refresh-cameras" id="refreshCameras" type="button">↻ Find cameras</button>
             <button class="button button-camera" id="cameraButton" type="button"><span class="camera-button-icon">◉</span><span id="cameraButtonText">Start camera</span></button>
@@ -97,6 +99,15 @@
     <dialog id="accountDialog" class="account-dialog"><button class="dialog-close" id="closeAccount" aria-label="Close" type="button">×</button><span class="eyebrow">YOUR ACCOUNT</span><h2 id="accountTitle">Sign in to sync</h2><p class="account-intro" id="accountIntro">Save your board and notes across devices. Your local board stays on this device.</p><div id="accountUnavailable" class="account-unavailable" hidden>Email sign-in is not connected yet. Your board and notes are still saved on this device.</div><form id="authForm"><label>Email<input id="authEmail" type="email" autocomplete="email" required /></label><label>Password<input id="authPassword" type="password" autocomplete="current-password" minlength="6" required /></label><button class="button button-dark auth-submit" id="signInButton" type="submit">Sign in</button><div class="auth-alternatives"><button id="createAccountButton" type="button">Create account</button><button id="resetPasswordButton" type="button">Forgot password?</button></div></form><div id="signedInPanel" hidden><p class="account-email" id="accountEmail"></p><p class="account-sync" id="accountSyncStatus">Your board is synced to your account.</p><button class="button button-quiet" id="signOutButton" type="button">Sign out</button></div><p id="authMessage" class="auth-message" role="status"></p></dialog>
     <dialog id="clearDialog" class="confirm-dialog"><form method="dialog"><h2>Clear the board?</h2><p>Your saved notes will stay. The current drawing will be removed.</p><div class="dialog-actions"><button class="button button-quiet" value="cancel">Cancel</button><button class="button button-danger" id="confirmClear" value="clear">Clear board</button></div></form></dialog>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=20260926-clear"></script>
+    <script>
+      if (location.protocol === 'file:') {
+        document.getElementById('localFileNotice').hidden = false;
+        document.getElementById('cameraMessage').textContent = 'This local file cannot start the app. Open the live app above, or serve this folder on localhost.';
+        document.getElementById('cameraButton').disabled = true;
+        document.getElementById('refreshCameras').disabled = true;
+        document.getElementById('trackingStatus').textContent = 'Open the live app';
+      }
+    </script>
+    <script type="module" src="./app.js?v=20260926-camera"></script>
   </body>
 </html>

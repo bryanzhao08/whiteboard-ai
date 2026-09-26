@@ -14,7 +14,7 @@ test('stale Continuity Camera IDs are rediscovered and initial zoom constraints 
     enumerateDevices: async () => [mac, phone],
     getUserMedia: async constraints => {
       assert.equal(constraints.video.deviceId.exact, phone.deviceId);
-      assert.equal(constraints.video.zoom, undefined);
+      assert.deepEqual(constraints.video, { deviceId: { exact: phone.deviceId } });
       return expected;
     }
   };

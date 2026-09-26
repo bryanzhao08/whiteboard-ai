@@ -235,7 +235,8 @@ export function cameraVideoConstraints(selected, mode) {
   const source = selected?.deviceId
     ? { deviceId: { exact: selected.deviceId } }
     : { facingMode: mode === 'iphone' ? 'environment' : 'user' };
-  return { ...source, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } };
+  // Let Continuity Camera negotiate its native format before applying zoom.
+  return mode === 'iphone' ? source : { ...source, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } };
 }
 
 // Keep discovery's permission stream alive until the selected camera is open.

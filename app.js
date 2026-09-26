@@ -1,4 +1,4 @@
-import { AdaptivePointFilter, OffhandGesture, PinchGate, selectHandRoles, recognizedHandPose, handNearFace, pinchRatio, isIPhoneCamera, listCameraDevicesWithPermission, openCameraStream, waitForVideoFrame, requestWideZoom, findPencilMarker, mapCameraPoint } from './tracking.mjs?v=20260925-navigation';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, selectHandRoles, recognizedHandPose, handNearFace, pinchRatio, isIPhoneCamera, listCameraDevicesWithPermission, openCameraStream, waitForVideoFrame, requestWideZoom, findPencilMarker, mapCameraPoint } from './tracking.mjs?v=20260926-camera';
 import { BoardViewport, NavigationGesture } from './viewport.mjs?v=20260925-navigation';
 import { createPdfFromJpeg } from './pdf.mjs';
 import { createCloud, isFirebaseConfigured } from './cloud.mjs';
@@ -24,7 +24,7 @@ const state = {
   lastVideoTime: -1, dominantWrist: null, drawingHandLabel: null, lastHandSeenAt: 0,
   pinchGate: new PinchGate(), pointFilter: new AdaptivePointFilter(), pendingCameraStart: null,
   offhandGesture: new OffhandGesture(), lastGestureAt: 0,
-  cameraId: '', pencil: false, cameraToken: 0, cameraStarting: false,
+  mirrorComputer: true, cameraId: '', pencil: false, cameraToken: 0, cameraStarting: false,
   viewport: new BoardViewport(), navigation: new NavigationGesture(), pointerPan: null
 };
 let cloud = null;
@@ -577,16 +577,31 @@ $('#captureButton').addEventListener('click', async () => {
   }
 });
 
+function updateCameraMirror() {
+  const mirrored = state.mode === 'computer' && state.mirrorComputer;
+  $('#cameraBox').classList.toggle('is-mirrored', mirrored);
+  $('#mirrorComputer').checked = state.mode === 'computer' && state.mirrorComputer;
+  $('#mirrorComputer').disabled = state.mode === 'iphone';
+  $('#modeDescription').textContent = state.mode === 'iphone'
+    ? 'iPhone view is unmirrored. On a Mac, lock your nearby iPhone and choose its Continuity Camera. On iPhone, use the rear camera.'
+    : `Computer camera preview is ${mirrored ? 'mirrored' : 'unmirrored'}. Keep your hands away from your face to draw or use shortcuts.`;
+}
+try { state.mirrorComputer = localStorage.getItem('mirrorboard-computer-mirror') !== 'false'; } catch { /* Default mirror. */ }
+updateCameraMirror();
+$('#mirrorComputer').addEventListener('change', event => {
+  finishStroke(); state.pendingCameraStart = null; state.pointFilter.reset(); state.navigation.reset();
+  state.mirrorComputer = event.target.checked;
+  try { localStorage.setItem('mirrorboard-computer-mirror', String(state.mirrorComputer)); } catch { /* Session preference still works. */ }
+  updateCameraMirror();
+});
+
 function setMode(mode) {
   if (state.mode === mode) return;
   finishStroke(); state.pinchGate.reset(); state.pointFilter.reset(); state.offhandGesture.reset(); state.pendingCameraStart = null;
   state.mode = mode; state.cameraId = '';
   document.querySelectorAll('[data-mode]').forEach(button => button.classList.toggle('is-active', button.dataset.mode === mode));
   $('#cameraModeSelect').value = mode;
-  $('#cameraBox').classList.toggle('is-mirrored', mode === 'computer');
-  $('#modeDescription').textContent = mode === 'iphone'
-      ? 'On a Mac, lock your nearby iPhone and select its Continuity Camera below. On iPhone, use the rear camera.'
-    : 'Computer camera preview is mirrored. Keep your hands away from your face to draw or use shortcuts.';
+  updateCameraMirror();
   $('#gestureHint').textContent = 'Touch fingertips to draw · separate to stop';
   updateCameraList();
   if (state.running || state.cameraStarting) restartCamera();
@@ -799,7 +814,7 @@ function scanMarkers(hand) {
 }
 
 function mapToBoard(point) {
-  return mapCameraPoint(point, state.mode === 'computer');
+  return mapCameraPoint(point, state.mode === 'computer' && state.mirrorComputer);
 }
 
 function handleOffhand(hand, now, pose = null) {

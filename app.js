@@ -258,7 +258,9 @@ document.querySelectorAll('[data-color]').forEach(button => button.addEventListe
 $('#brushSize').addEventListener('input', event => { state.size = Number(event.target.value); $('#brushValue').textContent = state.size; });
 $('#undoButton').addEventListener('click', undo);
 $('#redoButton').addEventListener('click', redo);
-$('#clearButton').addEventListener('click', () => { if (state.strokes.length) $('#clearDialog').showModal(); });
+function requestClearBoard() { if (state.strokes.length) $('#clearDialog').showModal(); }
+$('#clearButton').addEventListener('click', requestClearBoard);
+$('#clearBoardView').addEventListener('click', requestClearBoard);
 $('#clearDialog').addEventListener('close', () => {
   if ($('#clearDialog').returnValue !== 'clear') return;
   finishStroke(); state.strokes = []; state.redo = []; redraw(); markSaved(); toast('Board cleared');

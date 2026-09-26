@@ -7,7 +7,7 @@
     <meta name="description" content="A camera-powered whiteboard for drawing with your hands or a marked pencil, with on-device note recognition." />
     <title>MirrorBoard — Whiteboard AI</title>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-    <link rel="stylesheet" href="./style.css?v=20260924-camera-modes" />
+    <link rel="stylesheet" href="./style.css?v=20260925-navigation" />
   </head>
   <body>
     <div class="app-shell">
@@ -27,6 +27,7 @@
           <div class="rail-group">
             <button class="tool-button is-active" id="penTool" type="button" data-tool="pen" aria-label="Pen" title="Pen (P)">✎</button>
             <button class="tool-button" id="eraserTool" type="button" data-tool="eraser" aria-label="Eraser" title="Eraser (E)">⌫</button>
+            <button class="tool-button" id="panTool" type="button" data-tool="pan" aria-label="Move board" title="Drag to move board">✥</button>
           </div>
           <div class="rail-divider"></div>
           <div class="rail-group colors" aria-label="Pen colors">
@@ -59,7 +60,7 @@
             <div class="canvas-corner top-left"></div><div class="canvas-corner top-right"></div><div class="canvas-corner bottom-left"></div><div class="canvas-corner bottom-right"></div>
           </div>
 
-          <div class="board-footer"><span id="gestureHint">Touch fingertips to draw · separate to stop</span><span><span id="strokeCount">0</span> strokes</span></div>
+          <div class="board-footer"><span id="gestureHint">Touch fingertips to draw · separate to stop</span><div class="view-controls" aria-label="Board view"><button id="zoomOut" type="button" aria-label="Zoom out">−</button><output id="zoomValue">100%</output><button id="zoomIn" type="button" aria-label="Zoom in">+</button><button id="resetView" type="button">Reset view</button></div><span><span id="strokeCount">0</span> strokes</span></div>
         </section>
 
         <aside class="side-panel">
@@ -70,8 +71,9 @@
             <label class="field-label" for="cameraSelect">Camera source</label><select id="cameraSelect" aria-label="Camera source"><option value="">Default computer camera</option></select>
             <button class="refresh-cameras" id="refreshCameras" type="button">↻ Find cameras</button>
             <button class="button button-camera" id="cameraButton" type="button"><span class="camera-button-icon">◉</span><span id="cameraButtonText">Start camera</span></button>
+            <p class="camera-message" id="cameraMessage" role="status">Start the camera to check its connection.</p>
             <p class="mode-description" id="zoomStatus" aria-live="polite">0.5× wide view requested when the camera supports it</p>
-            <p class="mode-description" id="modeDescription">Computer camera preview is mirrored. Touch thumb and index tips to draw; separate them to stop immediately.</p>
+            <p class="mode-description" id="modeDescription">Computer camera preview is mirrored. Keep your hands away from your face to draw or use shortcuts.</p>
           </div>
 
           <div class="panel-section controls-panel">
@@ -80,7 +82,9 @@
             <div class="shortcut-row"><span class="shortcut-icon">✋</span><span>Off-hand open palm</span><kbd>pause</kbd></div>
             <div class="shortcut-row"><span class="shortcut-icon">☝</span><span>Off-hand index point</span><kbd>color</kbd></div>
             <div class="shortcut-row"><span class="shortcut-icon">✊</span><span>Hold off-hand fist</span><kbd>undo</kbd></div>
-            <div class="shortcut-row"><span class="shortcut-icon">↔</span><span>Wave both hands</span><kbd>clear</kbd></div>
+            <div class="shortcut-row"><span class="shortcut-icon">✌</span><span>Move a two-finger V</span><kbd>pan</kbd></div>
+            <div class="shortcut-row"><span class="shortcut-icon">↔</span><span>Two palms: apart / together</span><kbd>zoom</kbd></div>
+            <p class="gesture-status" id="gestureStatus" role="status">Pinch with your drawing hand to pair it. Then use the other hand for shortcuts.</p><button class="refresh-cameras" id="pairHandButton" type="button">Pair drawing hand again</button>
             <details class="pencil-details"><summary>Use a marked pencil <span>⌄</span></summary><p>Add a neon red sticker near the front tip and a pink sticker near the eraser end. Enable pencil tracking to use the tip as a precise cursor and flip it to erase. Touch your thumb and index fingertips to make a stroke.</p><label class="toggle-row"><input id="pencilToggle" type="checkbox" /> Track pencil markers</label></details>
           </div>
 
@@ -89,10 +93,10 @@
       </main>
     </div>
 
-    <dialog id="helpDialog" class="help-dialog"><form method="dialog"><button class="dialog-close" aria-label="Close" type="submit">×</button><span class="eyebrow">QUICK START</span><h2>Draw the way you work.</h2><div class="help-steps"><div><strong>01</strong><p><b>Computer camera</b><br />Use your computer webcam to trace in the air. Its preview acts like a mirror and the board cursor follows it.</p></div><div><strong>02</strong><p><b>iPhone camera</b><br />On a Mac, keep your iPhone locked and nearby, choose iPhone camera, then choose Find cameras. The app selects Continuity Camera. On iPhone, this mode uses the rear camera and stays unmirrored.</p></div><div><strong>03</strong><p><b>Make a mark</b><br />Touch your thumb and index fingertips and move to draw. Separate them to lift the pen immediately. Hold a fist with the other hand to undo, or point to change color.</p></div><div><strong>04</strong><p><b>Keep the idea</b><br />Recognize writing as an editable note, export PNG or PDF, and sign in to sync once cloud setup is complete.</p></div></div><p class="help-small">Hand tracking requires camera permission and an internet connection to load the model. Mouse and touch drawing work without a camera.</p><button class="button button-dark dialog-done" type="submit">Got it</button></form></dialog>
+    <dialog id="helpDialog" class="help-dialog"><form method="dialog"><button class="dialog-close" aria-label="Close" type="submit">×</button><span class="eyebrow">QUICK START</span><h2>Draw the way you work.</h2><div class="help-steps"><div><strong>01</strong><p><b>Computer camera</b><br />Use your computer webcam to trace in the air. Its preview acts like a mirror and the board cursor follows it.</p></div><div><strong>02</strong><p><b>iPhone camera</b><br />On a Mac, keep your iPhone locked and nearby, choose iPhone camera, then choose Find cameras. The app selects Continuity Camera. On iPhone, this mode uses the rear camera and stays unmirrored.</p></div><div><strong>03</strong><p><b>Make a mark</b><br />Touch your thumb and index fingertips and move to draw. Separate them to lift the pen immediately. Hold an off-hand fist to undo, or point with its index finger to change color. Keep hands away from your face. Make a two-finger V and move to drag the board; show two open palms and move them apart or together to zoom.</p></div><div><strong>04</strong><p><b>Keep the idea</b><br />Recognize writing as an editable note, export PNG or PDF, and sign in to sync once cloud setup is complete.</p></div></div><p class="help-small">Hand tracking requires camera permission and an internet connection to load the model. Mouse and touch drawing work without a camera.</p><button class="button button-dark dialog-done" type="submit">Got it</button></form></dialog>
     <dialog id="accountDialog" class="account-dialog"><button class="dialog-close" id="closeAccount" aria-label="Close" type="button">×</button><span class="eyebrow">YOUR ACCOUNT</span><h2 id="accountTitle">Sign in to sync</h2><p class="account-intro" id="accountIntro">Save your board and notes across devices. Your local board stays on this device.</p><div id="accountUnavailable" class="account-unavailable" hidden>Email sign-in is not connected yet. Your board and notes are still saved on this device.</div><form id="authForm"><label>Email<input id="authEmail" type="email" autocomplete="email" required /></label><label>Password<input id="authPassword" type="password" autocomplete="current-password" minlength="6" required /></label><button class="button button-dark auth-submit" id="signInButton" type="submit">Sign in</button><div class="auth-alternatives"><button id="createAccountButton" type="button">Create account</button><button id="resetPasswordButton" type="button">Forgot password?</button></div></form><div id="signedInPanel" hidden><p class="account-email" id="accountEmail"></p><p class="account-sync" id="accountSyncStatus">Your board is synced to your account.</p><button class="button button-quiet" id="signOutButton" type="button">Sign out</button></div><p id="authMessage" class="auth-message" role="status"></p></dialog>
     <dialog id="clearDialog" class="confirm-dialog"><form method="dialog"><h2>Clear the board?</h2><p>Your saved notes will stay. The current drawing will be removed.</p><div class="dialog-actions"><button class="button button-quiet" value="cancel">Cancel</button><button class="button button-danger" id="confirmClear" value="clear">Clear board</button></div></form></dialog>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=20260924-camera-modes"></script>
+    <script type="module" src="./app.js?v=20260925-navigation"></script>
   </body>
 </html>

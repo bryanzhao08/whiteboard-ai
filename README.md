@@ -4,11 +4,12 @@ MirrorBoard is a camera-powered whiteboard that also works with a mouse or touch
 
 ## Features
 
-- Track up to two hands with MediaPipe Hand Landmarker. Aim with your index finger; touch thumb and index fingertips and move to draw. The pen turns off as soon as the fingertips separate or tracking loses the hand. A stationary pinch will not leave a dot. Adaptive cursor smoothing reduces hand landmark jitter while keeping deliberate movement responsive.
-- Use the other hand to pause (open palm), cycle ink colors (hold an index point for 650 ms), or undo (hold a fist for 350 ms). A two-hand wave opens a clear confirmation.
+- Track up to two hands with MediaPipe Gesture Recognizer, using its trained fist, pointing, palm, and V-sign detection. Aim with your index finger; touch thumb and index fingertips and move to draw. The pen turns off as soon as the fingertips separate or tracking loses the hand. A stationary pinch will not leave a dot. Adaptive cursor smoothing reduces hand landmark jitter while keeping deliberate movement responsive. In Computer camera mode, a lightweight face detector blocks drawing and hand shortcuts when a hand is close to the face.
+- Use the other hand to pause (open palm), cycle ink colors (hold an index point for 450 ms), or undo (hold a fist for 300 ms). The app keeps the drawing hand identity after its first pinch, so off-hand shortcuts can work even when only the off hand remains in view. Release a shortcut gesture before repeating it. Use **Pair drawing hand again** to change the drawing hand.
 - Optional marked-pencil tracking: a neon red marker near the front tip moves a pen cursor; a pink marker near the eraser end switches to erasing. Touch thumb and index fingertips while holding the pencil to make a mark. Marker tracking is experimental and depends on lighting and marker colors.
 - Request a real 0.5× wide camera view where the browser and camera support it. The camera panel reports whether 0.5× is active, requested without confirmation, or unavailable. On a Mac with Continuity Camera, use [Video Effects](https://support.apple.com/en-us/105117) to select 0.5× or Ultra Wide when the browser cannot set it.
-- Draw with mouse or touch, choose colors and brush size, erase, undo, redo, clear, and export a PNG.
+- Move a two-finger V vertically to scroll or in any direction to drag the board. Hold two open palms and move them apart/together to zoom, or move both together to pan. Navigation pauses drawing.
+- Draw with mouse or touch, choose colors and brush size, erase, undo, redo, clear, and export a PNG. The Move board tool, mouse wheel, Ctrl/Cmd+wheel, zoom buttons, and Reset view also control the view. Exports and handwriting capture include ink outside the current view.
 - Export the board directly as an A4 PDF. PDF and PNG exports keep a white background even when dark mode is active.
 - Switch between light and dark mode; the choice is saved in this browser. Rename the board to set its export filename.
 - Recognize handwriting and cursive with a pretrained TrOCR handwriting model. Choose the faster Tesseract.js mode for printed or block letters. Captured notes are editable and saved in this browser.
@@ -24,9 +25,9 @@ python3 -m http.server 8000
 
 Open <http://localhost:8000>. Camera access requires localhost or HTTPS. The first camera use downloads the MediaPipe model and runtime. The first cursive recognition downloads a pretrained handwriting model (tens of MB); printed-text recognition downloads Tesseract and English data. An internet connection is required for those first downloads. Mouse and touch drawing work without them.
 
-To use the iPhone camera on a Mac, set up [Apple Continuity Camera](https://support.apple.com/en-us/102546). Keep the iPhone nearby and locked, with Wi-Fi, Bluetooth, and Continuity Camera enabled. Select **iPhone camera** in the camera panel or above the board, then press **Find cameras** and **Start camera**. The browser may first ask for ordinary camera permission so MirrorBoard can reveal device labels. It then selects the iPhone by its exact device ID and shows the active source in the menu; it will not silently switch to the Mac webcam. The camera list updates when devices connect or disconnect.
+To use the iPhone camera on a Mac, set up [Apple Continuity Camera](https://support.apple.com/en-us/102546). Keep the iPhone nearby and locked, with Wi-Fi, Bluetooth, and Continuity Camera enabled. Select **iPhone camera** in the camera panel or above the board, then press **Find cameras** and **Start camera**. The browser may first ask for ordinary camera permission so MirrorBoard can reveal device labels. It then selects the iPhone by its exact device ID and shows the active source in the menu; it will not silently switch to the Mac webcam. The camera list updates when devices connect or disconnect. Startup refreshes stale device IDs and keeps the permission stream alive during camera handover. The panel shows the selected source, video resolution, or exact startup error.
 
-If the iPhone is listed but its preview stays blank, unlock and lock it again, reconnect it, or try a USB connection, then restart the camera. MirrorBoard reports a stream that delivers no video frames. If you open MirrorBoard directly on an iPhone, iPhone mode uses its rear camera.
+If the iPhone is listed but its preview stays blank, unlock and lock it again, reconnect it, or try a USB connection, then restart the camera. MirrorBoard waits for real video dimensions and retries a blank iPhone stream once with basic device constraints. Camera zoom is applied after video starts. If the hand model fails to download, the camera preview stays live and displays the model error. If you open MirrorBoard directly on an iPhone, iPhone mode uses its rear camera.
 
 ## Publish with GitHub Pages
 
@@ -50,14 +51,18 @@ The first time an account signs in without a cloud board, the current local boar
 | Draw | Mouse/touch drag, or hold a thumb-to-index pinch while moving on camera |
 | Move without drawing | Separate thumb and index fingertips; the pen turns off immediately |
 | Pause camera drawing | Show an open palm with your second hand |
-| Change color | Point with the second hand for 650 ms |
-| Undo | Hold a fist with the second hand for 350 ms |
-| Clear | Wave both hands, then confirm |
+| Change color | Point with the second hand for 450 ms |
+| Undo | Hold a fist with the second hand for 300 ms |
+| Scroll / drag board | Hold a two-finger V briefly, then move vertically or in any direction |
+| Zoom / pan board | Hold two open palms briefly; apart/together zooms, moving together pans |
+| Mouse navigation | Move board tool or middle-button drag; wheel pans; Ctrl/Cmd+wheel zooms |
+| Reset view | Reset view button returns to the original 100% view |
+| Clear | Clear board button, then confirm |
 | Keyboard | `P` pen, `E` eraser, `Ctrl/Cmd+Z` undo, `Ctrl/Cmd+Shift+Z` redo |
 
 ## Implementation notes
 
-The browser loads MediaPipe Tasks Vision 1.0.1 and Tesseract.js 5.1.1 from pinned CDN URLs. The hand model is loaded from Google's MediaPipe model storage. Hand landmarks are mapped from the unmirrored camera frame to the board. Pencil marker tracking uses simple color detection near the drawing hand and is an optional aid, not a trained pencil detector.
+The browser loads MediaPipe Tasks Vision 1.0.1 and Tesseract.js 5.1.1 from pinned CDN URLs. The gesture model and lightweight face model are loaded from Google's MediaPipe model storage. Face detection runs periodically in Computer camera mode. Landmarks map to the mirrored computer view or the original iPhone view, then through the board's pan/zoom transform. Pencil marker tracking uses simple color detection near the drawing hand and is an optional aid, not a trained pencil detector.
 
 For handwritten notes, the app loads [Xenova/trocr-small-handwritten](https://huggingface.co/Xenova/trocr-small-handwritten) through Transformers.js 3.8.1 and runs inference in your browser. Its source model was already trained on the [IAM handwriting dataset](https://huggingface.co/microsoft/trocr-small-handwritten); this project does not download a raw dataset or train on your writing. The browser downloads and caches model weights on first use. Board images are processed locally and are not sent to Hugging Face. TrOCR expects single-line images, so the app separates lines from the ink before recognition. Leave space between lines; connected or overlapping lines may be read together. If the handwriting model cannot load, the app tries printed-text OCR. Recognition can still make mistakes; edit the note afterward.
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, pinchRatio, pickDrawingHandIndex, isIPhoneCamera, pickCameraDevice, listCameraDevicesWithPermission, findCameraWithPermission, cameraVideoConstraints, waitForVideoFrame, requestWideZoom, classifyPencilPixel, findPencilMarker, mapCameraPoint } from '../tracking.mjs';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, recognizedHandPose, pinchRatio, pickDrawingHandIndex, selectHandRoles, handNearFace, isIPhoneCamera, pickCameraDevice, listCameraDevicesWithPermission, findCameraWithPermission, openCameraStream, cameraVideoConstraints, waitForVideoFrame, requestWideZoom, classifyPencilPixel, findPencilMarker, mapCameraPoint } from '../tracking.mjs';
 
 function makeHand(pose = 'palm', offsetX = 0) {
   const hand = Array.from({ length: 21 }, () => ({ x: .5 + offsetX, y: .7 }));
@@ -46,21 +46,30 @@ test('point, fist, and open palm remain distinct in either camera orientation', 
   imperfectPalm[19] = { x: imperfectPalm[18].x, y: .53 };
   imperfectPalm[20] = { x: imperfectPalm[18].x, y: .61 };
   assert.equal(classifyHandPose(imperfectPalm), 'palm');
+  const bentPoint = makeHand('point');
+  bentPoint[7] = { x: bentPoint[6].x + .14, y: .32 };
+  bentPoint[8] = { x: bentPoint[6].x + .17, y: .22 };
+  assert.equal(classifyHandPose(bentPoint), 'point');
 });
 
 test('offhand pointer changes color once and held fist undoes once', () => {
   const gesture = new OffhandGesture();
   const point = makeHand('point');
   const fist = makeHand('fist');
-  assert.equal(gesture.update(point, 100).action, null);
+  const pointing = gesture.update(point, 100);
+  assert.equal(pointing.action, null);
+  assert.equal(pointing.pause, true);
   const unclear = makeHand('point');
   unclear[8] = { x: unclear[8].x + .16, y: unclear[8].y + .16 };
   assert.equal(gesture.update(unclear, 175).action, null);
-  assert.equal(gesture.update(point, 749).action, null);
-  assert.equal(gesture.update(point, 750).action, 'color');
+  assert.equal(gesture.update(point, 549).action, null);
+  assert.equal(gesture.update(point, 550).action, 'color');
   assert.equal(gesture.update(point, 1400).action, null);
-  assert.equal(gesture.update(fist, 1500).action, null);
-  assert.equal(gesture.update(fist, 1850).action, 'undo');
+  const holdingFist = gesture.update(fist, 1500);
+  assert.equal(holdingFist.action, null);
+  assert.equal(holdingFist.pause, true);
+  assert.equal(gesture.update(null, 1600).action, null);
+  assert.equal(gesture.update(fist, 1800).action, 'undo');
   assert.equal(gesture.update(fist, 2500).action, null);
   assert.equal(gesture.update(makeHand('palm'), 2600).pause, true);
 });
@@ -71,6 +80,49 @@ test('a pinched hand remains the drawing hand when the other hand points', () =>
   drawing[4] = { ...drawing[8] };
   assert.equal(pickDrawingHandIndex([pointer, drawing], pointer[0]), 1);
   assert.equal(pickDrawingHandIndex([drawing, pointer], pointer[0]), 0);
+});
+
+test('drawing hand identity survives off-hand fist and one-hand visibility', () => {
+  const drawing = makeHand('palm', -.18);
+  drawing[4] = { ...drawing[8] };
+  const offhand = makeHand('fist', .18);
+  const labels = [[{ categoryName: 'Right' }], [{ categoryName: 'Left' }]];
+  const first = selectHandRoles([drawing, offhand], labels);
+  assert.equal(first.drawing, drawing);
+  assert.equal(first.drawingLabel, 'Right');
+  const released = makeHand('palm', -.18);
+  const next = selectHandRoles([offhand, released], [labels[1], labels[0]], drawing[0], first.drawingLabel);
+  assert.equal(next.drawing, released);
+  assert.equal(next.offhand, offhand);
+  const onlyOffhand = selectHandRoles([offhand], [labels[1]], released[0], first.drawingLabel);
+  assert.equal(onlyOffhand.drawing, null);
+  assert.equal(onlyOffhand.offhand, offhand);
+  // A fist's thumb and index can touch. That must never steal the paired role.
+  offhand[4] = { ...offhand[8] };
+  const closed = selectHandRoles([offhand, released], [labels[1], labels[0]], drawing[0], 'Right', ['fist', 'palm']);
+  assert.equal(closed.drawing, released);
+  assert.equal(closed.drawingLabel, 'Right');
+  assert.equal(selectHandRoles([offhand], [labels[1]], drawing[0], 'Right', ['fist']).offhand, offhand);
+});
+
+test('trained gestures drive fist and pointing shortcuts even when landmark pose is ambiguous', () => {
+  const hand = makeHand('palm');
+  assert.equal(recognizedHandPose(hand, [{ categoryName: 'Closed_Fist', score: .8 }]), 'fist');
+  assert.equal(recognizedHandPose(hand, [{ categoryName: 'Pointing_Up', score: .8 }]), 'point');
+  const gesture = new OffhandGesture();
+  assert.equal(gesture.update(hand, 100, 'fist').action, null);
+  assert.equal(gesture.update(hand, 400, 'fist').action, 'undo');
+  assert.equal(gesture.update(hand, 500, 'point').action, null);
+  assert.equal(gesture.update(hand, 950, 'point').action, 'color');
+});
+
+test('hands close to the detected face are excluded while extended hands remain usable', () => {
+  const face = { x: .35, y: .12, width: .3, height: .34 };
+  const near = makeHand('point');
+  assert.equal(handNearFace(near, face), true);
+  const away = near.map(point => ({ x: point.x + .43, y: point.y + .3 }));
+  assert.equal(handNearFace(away, face), false);
+  assert.equal(handNearFace(near, null), false);
 });
 
 test('camera selection keeps computer and iPhone sources separate', () => {
@@ -90,7 +142,7 @@ test('camera selection keeps computer and iPhone sources separate', () => {
   ], 'iphone', '', true)?.deviceId, 'wide');
   assert.equal(cameraVideoConstraints(devices[0], 'iphone').deviceId.exact, 'phone');
   assert.equal(cameraVideoConstraints(null, 'iphone').facingMode, 'environment');
-  assert.equal(cameraVideoConstraints(devices[0], 'iphone').zoom.ideal, .5);
+  assert.equal(cameraVideoConstraints(devices[0], 'iphone').zoom, undefined);
 });
 
 test('0.5x uses physical camera zoom when available and reports its limit otherwise', async () => {

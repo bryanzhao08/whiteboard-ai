@@ -27,7 +27,8 @@ function fingerExtended(hand, mcp, pip, dip, tip) {
   const a = { x: hand[mcp].x - hand[pip].x, y: hand[mcp].y - hand[pip].y };
   const b = { x: hand[dip].x - hand[pip].x, y: hand[dip].y - hand[pip].y };
   const cosine = (a.x * b.x + a.y * b.y) / Math.max(Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y), 1e-6);
-  return cosine < -.82 && distance(hand[tip], hand[mcp]) > distance(hand[pip], hand[mcp]) * 1.35;
+  const reach = distance(hand[tip], hand[mcp]) / Math.max(distance(hand[pip], hand[mcp]), 1e-6);
+  return reach > 1.4 && (cosine < -.5 || reach > 1.9);
 }
 
 export function classifyHandPose(hand) {
@@ -36,13 +37,21 @@ export function classifyHandPose(hand) {
     .map(indices => fingerExtended(hand, ...indices));
   const count = extended.filter(Boolean).length;
   if (count >= 3) return 'palm';
+  if (extended[0] && extended[1] && count === 2) return 'victory';
   if (extended[0] && count === 1) return 'point';
   if (!extended[0] && count <= 1) return 'fist';
   return 'other';
 }
 
+export function recognizedHandPose(hand, categories = []) {
+  const category = categories[0];
+  const poses = { Closed_Fist: 'fist', Pointing_Up: 'point', Open_Palm: 'palm', Victory: 'victory' };
+  if (category?.score >= .55 && poses[category.categoryName]) return poses[category.categoryName];
+  return classifyHandPose(hand);
+}
+
 export class OffhandGesture {
-  constructor({ pointHoldMs = 650, fistHoldMs = 350 } = {}) {
+  constructor({ pointHoldMs = 450, fistHoldMs = 300 } = {}) {
     this.pointHoldMs = pointHoldMs;
     this.fistHoldMs = fistHoldMs;
     this.reset();
@@ -55,10 +64,10 @@ export class OffhandGesture {
     this.fired = false;
   }
 
-  update(hand, now) {
-    const observed = classifyHandPose(hand);
-    if (observed === 'other' && (this.pose === 'point' || this.pose === 'fist') && now - this.lastSeenAt <= 120) {
-      return { pose: this.pose, pause: false, action: null };
+  update(hand, now, recognizedPose = null) {
+    const observed = recognizedPose || classifyHandPose(hand);
+    if ((observed === 'other' || observed === 'none') && (this.pose === 'point' || this.pose === 'fist') && now - this.lastSeenAt <= 250) {
+      return { pose: this.pose, pause: true, action: null };
     }
     const pose = observed;
     if (pose !== this.pose) {
@@ -73,7 +82,7 @@ export class OffhandGesture {
       action = pose === 'point' ? 'color' : 'undo';
       this.fired = true;
     }
-    return { pose, pause: pose === 'palm', action };
+    return { pose, pause: pose === 'palm' || pose === 'point' || pose === 'fist', action };
   }
 }
 
@@ -84,6 +93,40 @@ export function pickDrawingHandIndex(hands, previousWrist = null) {
   if (pinched[0] !== pinched[1]) return pinched[0] ? 0 : 1;
   if (previousWrist) return distance(hands[0][0], previousWrist) <= distance(hands[1][0], previousWrist) ? 0 : 1;
   return hands[0][0].x > hands[1][0].x ? 0 : 1;
+}
+
+export function selectHandRoles(hands, handednesses = [], previousWrist = null, drawingLabel = null, poses = []) {
+  if (!hands.length) return { drawing: null, offhand: null, drawingLabel };
+  const labels = hands.map((_, index) => handednesses[index]?.[0]?.categoryName || null);
+  const pinched = hands.map((hand, i) => (poses[i] || classifyHandPose(hand)) !== 'fist' && pinchRatio(hand) <= PINCH_TOUCH_THRESHOLD);
+  const uniquePinch = pinched.filter(Boolean).length === 1 ? pinched.indexOf(true) : -1;
+  let drawingIndex = -1;
+  if (drawingLabel) {
+    const matches = labels.map((label, index) => label === drawingLabel ? index : -1).filter(index => index >= 0);
+    if (matches.length === 1) drawingIndex = matches[0];
+  }
+  if (drawingIndex < 0 && !drawingLabel) drawingIndex = uniquePinch;
+  if (drawingIndex < 0) drawingIndex = pickDrawingHandIndex(hands, previousWrist);
+  if (hands.length === 1 && drawingLabel && labels[0] && labels[0] !== drawingLabel) {
+    return { drawing: null, offhand: hands[0], drawingLabel };
+  }
+  return {
+    drawing: hands[drawingIndex],
+    offhand: hands.length === 2 ? hands[1 - drawingIndex] : null,
+    drawingLabel: drawingLabel || (uniquePinch >= 0 ? labels[uniquePinch] : null)
+  };
+}
+
+export function handNearFace(hand, faceBox) {
+  if (!hand || !faceBox) return false;
+  const marginX = faceBox.width * .2 + .025;
+  const marginY = faceBox.height * .2 + .025;
+  const left = faceBox.x - marginX;
+  const right = faceBox.x + faceBox.width + marginX;
+  const top = faceBox.y - marginY;
+  const bottom = faceBox.y + faceBox.height + marginY;
+  return [hand[0], hand[9], hand[8]].some(point =>
+    point && point.x >= left && point.x <= right && point.y >= top && point.y <= bottom);
 }
 
 // A One Euro filter: steady hands get stronger smoothing while deliberate motion
@@ -181,10 +224,10 @@ export async function listCameraDevicesWithPermission(mediaDevices, force = fals
 
 export async function findCameraWithPermission(mediaDevices, mode, selectedId = '', onIPhone = false) {
   let devices = await mediaDevices.enumerateDevices();
-  let selected = pickCameraDevice(devices, mode, selectedId, onIPhone);
+  let selected = pickCameraDevice(devices, mode, selectedId, onIPhone) || pickCameraDevice(devices, mode, '', onIPhone);
   if (selected && selected.label) return selected;
   devices = await listCameraDevicesWithPermission(mediaDevices, true, devices);
-  selected = pickCameraDevice(devices, mode, selectedId, onIPhone);
+  selected = pickCameraDevice(devices, mode, selectedId, onIPhone) || pickCameraDevice(devices, mode, '', onIPhone);
   return selected;
 }
 
@@ -192,7 +235,45 @@ export function cameraVideoConstraints(selected, mode) {
   const source = selected?.deviceId
     ? { deviceId: { exact: selected.deviceId } }
     : { facingMode: mode === 'iphone' ? 'environment' : 'user' };
-  return { ...source, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 }, zoom: { ideal: .5 } };
+  return { ...source, width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } };
+}
+
+// Keep discovery's permission stream alive until the selected camera is open.
+// If it is already the selected device, reuse it rather than restarting iPhone.
+export async function openCameraStream(mediaDevices, mode, selectedId = '', onIPhone = false) {
+  let permissionStream;
+  try {
+    let devices = await mediaDevices.enumerateDevices();
+    let selected = pickCameraDevice(devices, mode, selectedId, onIPhone) || pickCameraDevice(devices, mode, '', onIPhone);
+    if (!selected?.label) {
+      permissionStream = await mediaDevices.getUserMedia({ audio: false, video: true });
+      devices = await mediaDevices.enumerateDevices();
+      selected = pickCameraDevice(devices, mode, selectedId, onIPhone) || pickCameraDevice(devices, mode, '', onIPhone);
+    }
+    if (mode === 'iphone' && !onIPhone && !selected) {
+      throw Object.assign(new Error('iPhone Continuity Camera is not listed by this browser'), { name: 'IPhoneCameraNotFound' });
+    }
+    const permissionTrack = permissionStream?.getVideoTracks()[0];
+    if (selected?.deviceId && permissionTrack?.getSettings?.().deviceId === selected.deviceId) {
+      const stream = permissionStream;
+      permissionStream = null;
+      return { stream, selected };
+    }
+    let stream;
+    try {
+      stream = await mediaDevices.getUserMedia({ audio: false, video: cameraVideoConstraints(selected, mode) });
+    } catch (error) {
+      if (!['OverconstrainedError', 'NotReadableError', 'NotFoundError'].includes(error.name)) throw error;
+      const fresh = await mediaDevices.enumerateDevices();
+      selected = pickCameraDevice(fresh, mode, selected?.deviceId, onIPhone) || pickCameraDevice(fresh, mode, '', onIPhone);
+      if (mode === 'iphone' && !onIPhone && !selected) throw Object.assign(new Error('iPhone camera disconnected'), { name: 'IPhoneCameraNotFound' });
+      const video = selected?.deviceId ? { deviceId: { exact: selected.deviceId } } : { facingMode: mode === 'iphone' ? 'environment' : 'user' };
+      stream = await mediaDevices.getUserMedia({ audio: false, video });
+    }
+    return { stream, selected };
+  } finally {
+    permissionStream?.getTracks().forEach(track => track.stop());
+  }
 }
 
 export async function requestWideZoom(track, target = .5) {

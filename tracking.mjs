@@ -52,37 +52,34 @@ export function recognizedHandPose(hand, categories = []) {
 
 export class OffhandGesture {
   constructor({ pointHoldMs = 450, fistHoldMs = 300 } = {}) {
-    this.pointHoldMs = pointHoldMs;
-    this.fistHoldMs = fistHoldMs;
-    this.reset();
+    this.pointHoldMs = pointHoldMs; this.fistHoldMs = fistHoldMs; this.reset();
   }
-
   reset() {
-    this.pose = 'none';
-    this.since = 0;
-    this.lastSeenAt = 0;
-    this.fired = false;
+    this.pose = 'none'; this.since = 0; this.lastSeenAt = null; this.fired = false;
+    this.candidate = null; this.candidateSince = 0;
   }
-
   update(hand, now, recognizedPose = null) {
-    const observed = recognizedPose || classifyHandPose(hand);
-    if ((observed === 'other' || observed === 'none') && (this.pose === 'point' || this.pose === 'fist') && now - this.lastSeenAt <= 250) {
-      return { pose: this.pose, pause: true, action: null };
-    }
-    const pose = observed;
-    if (pose !== this.pose) {
-      this.pose = pose;
-      this.since = now;
-      this.fired = false;
+    if (this.lastSeenAt !== null && now - this.lastSeenAt > 350) this.reset();
+    const observed = hand ? recognizedPose || classifyHandPose(hand) : 'none';
+    if (observed === 'other' || observed === 'none') {
+      // Brief missing/ambiguous results do not restart a deliberate hold.
+      const pause = this.pose !== 'none' && this.lastSeenAt !== null && now - this.lastSeenAt <= 250;
+      return { pose: pause ? this.pose : 'none', pause, action: null };
     }
     this.lastSeenAt = now;
-    let action = null;
-    const holdMs = pose === 'point' ? this.pointHoldMs : pose === 'fist' ? this.fistHoldMs : Infinity;
-    if (!this.fired && now - this.since >= holdMs) {
-      action = pose === 'point' ? 'color' : 'undo';
-      this.fired = true;
+    if (observed !== this.pose) {
+      if (this.candidate !== observed) { this.candidate = observed; this.candidateSince = now; }
+      const settleMs = observed === 'palm' ? 300 : 120;
+      if (now - this.candidateSince < settleMs) return { pose: 'other', pause: false, action: null };
+      this.pose = observed; this.since = this.candidateSince; this.fired = false;
     }
-    return { pose, pause: pose === 'palm' || pose === 'point' || pose === 'fist', action };
+    this.candidate = null;
+    let action = null;
+    const holdMs = this.pose === 'point' ? this.pointHoldMs : this.pose === 'fist' ? this.fistHoldMs : Infinity;
+    if (!this.fired && now - this.since >= holdMs) {
+      action = this.pose === 'point' ? 'color' : 'undo'; this.fired = true;
+    }
+    return { pose: this.pose, pause: ['palm', 'point', 'fist'].includes(this.pose), action };
   }
 }
 
@@ -117,15 +114,47 @@ export function selectHandRoles(hands, handednesses = [], previousWrist = null, 
   };
 }
 
+export class HandRoleTracker {
+  constructor() { this.reset(); }
+  reset() { this.drawing = null; this.offhand = null; this.drawingLabel = null; }
+  update(hands, labels = [], poses = [], now = 0) {
+    let roles = selectHandRoles(hands, labels, this.drawing?.wrist, this.drawingLabel, poses);
+    const recent = track => track && now - track.time <= 500;
+    const cost = (hand, track, label) => distance(hand[0], track.wrist) + (label && track.label && label !== track.label ? .025 : 0);
+    if (this.drawingLabel && hands.length) {
+      const names = hands.map((_, i) => labels[i]?.[0]?.categoryName);
+      if (hands.length === 2 && recent(this.drawing) && recent(this.offhand)) {
+        const direct = cost(hands[0], this.drawing, names[0]) + cost(hands[1], this.offhand, names[1]);
+        const reverse = cost(hands[1], this.drawing, names[1]) + cost(hands[0], this.offhand, names[0]);
+        const i = direct <= reverse ? 0 : 1;
+        if (distance(hands[i][0], this.drawing.wrist) < .28 && distance(hands[1-i][0], this.offhand.wrist) < .28)
+          roles = { drawing: hands[i], offhand: hands[1-i], drawingLabel: this.drawingLabel };
+      } else if (hands.length === 1) {
+        const d = recent(this.drawing) ? cost(hands[0], this.drawing, names[0]) : Infinity;
+        const o = recent(this.offhand) ? cost(hands[0], this.offhand, names[0]) : Infinity;
+        if (Math.min(d, o) < .28 && Math.abs(d - o) > .04)
+          roles = { drawing: d < o ? hands[0] : null, offhand: o < d ? hands[0] : null, drawingLabel: this.drawingLabel };
+      }
+    }
+    this.drawingLabel = roles.drawingLabel;
+    for (const role of ['drawing', 'offhand']) if (roles[role]) {
+      const i = hands.indexOf(roles[role]);
+      this[role] = { wrist: { ...roles[role][0] }, time: now, label: role === 'drawing' ? this.drawingLabel : labels[i]?.[0]?.categoryName };
+    }
+    return roles;
+  }
+}
+
 export function handNearFace(hand, faceBox) {
   if (!hand || !faceBox) return false;
-  const marginX = faceBox.width * .2 + .025;
-  const marginY = faceBox.height * .2 + .025;
+  const marginX = faceBox.width * .1 + .015;
+  const marginY = faceBox.height * .1 + .015;
   const left = faceBox.x - marginX;
   const right = faceBox.x + faceBox.width + marginX;
   const top = faceBox.y - marginY;
   const bottom = faceBox.y + faceBox.height + marginY;
-  return [hand[0], hand[9], hand[8]].some(point =>
+  // Fingertips can cross the face while an extended palm is safely outside.
+  return [hand[0], hand[9]].every(point =>
     point && point.x >= left && point.x <= right && point.y >= top && point.y <= bottom);
 }
 
@@ -193,7 +222,9 @@ export class AdaptivePointFilter {
 }
 
 export function isIPhoneCamera(device) {
-  return /iphone|continuity camera/i.test(device?.label || '');
+  // macOS can name a Continuity device after the phone's custom name,
+  // e.g. "bryan phone Camera", without the word iPhone.
+  return /iphone|continuity camera|\bphone\b.*\bcamera\b/i.test(device?.label || '');
 }
 
 export function pickCameraDevice(devices, mode, selectedId = '', onIPhone = false) {

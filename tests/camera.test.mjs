@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openCameraStream } from '../tracking.mjs';
+import { openCameraStream, isIPhoneCamera, pickCameraDevice } from '../tracking.mjs';
 
 const phone = { kind: 'videoinput', deviceId: 'new-phone-id', label: 'iPhone Continuity Camera' };
 const mac = { kind: 'videoinput', deviceId: 'mac', label: 'FaceTime HD Camera' };
@@ -60,4 +60,20 @@ test('failed resolution request retries the exact iPhone with basic constraints'
     }
   };
   await openCameraStream(media, 'iphone'); assert.equal(count, 2);
+});
+
+
+test('custom-named Continuity phone is classified in iPhone mode and opened exactly', async () => {
+  const customPhone = { ...phone, label: 'bryan phone Camera' };
+  assert.equal(isIPhoneCamera(customPhone), true);
+  assert.equal(pickCameraDevice([mac, customPhone], 'iphone'), customPhone);
+  assert.equal(pickCameraDevice([customPhone, mac], 'computer'), mac);
+  const media = {
+    enumerateDevices: async () => [mac, customPhone],
+    getUserMedia: async ({ video }) => {
+      assert.deepEqual(video, { deviceId: { exact: customPhone.deviceId } });
+      return stream(customPhone.deviceId);
+    }
+  };
+  assert.equal((await openCameraStream(media, 'iphone')).selected, customPhone);
 });

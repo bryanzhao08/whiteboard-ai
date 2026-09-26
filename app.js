@@ -1,5 +1,5 @@
-import { AdaptivePointFilter, OffhandGesture, PinchGate, selectHandRoles, recognizedHandPose, handNearFace, pinchRatio, isIPhoneCamera, listCameraDevicesWithPermission, openCameraStream, waitForVideoFrame, requestWideZoom, findPencilMarker, mapCameraPoint } from './tracking.mjs?v=20260926-camera';
-import { BoardViewport, NavigationGesture } from './viewport.mjs?v=20260925-navigation';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, HandRoleTracker, recognizedHandPose, handNearFace, pinchRatio, isIPhoneCamera, listCameraDevicesWithPermission, openCameraStream, waitForVideoFrame, requestWideZoom, findPencilMarker, mapCameraPoint } from './tracking.mjs?v=20260926-named-camera';
+import { BoardViewport, NavigationGesture } from './viewport.mjs?v=20260926-named-camera';
 import { createPdfFromJpeg } from './pdf.mjs';
 import { createCloud, isFirebaseConfigured } from './cloud.mjs';
 import { firebaseConfig } from './firebase-config.js';
@@ -23,7 +23,7 @@ const state = {
   mode: 'computer', stream: null, landmarker: null, faceDetector: null, faceBox: null, faceCheckedAt: 0, lastFaceAt: 0, running: false, frameId: 0,
   lastVideoTime: -1, dominantWrist: null, drawingHandLabel: null, lastHandSeenAt: 0,
   pinchGate: new PinchGate(), pointFilter: new AdaptivePointFilter(), pendingCameraStart: null,
-  offhandGesture: new OffhandGesture(), lastGestureAt: 0,
+  handRoles: new HandRoleTracker(), offhandGesture: new OffhandGesture(), lastGestureAt: 0,
   mirrorComputer: true, cameraId: '', pencil: false, cameraToken: 0, cameraStarting: false,
   viewport: new BoardViewport(), navigation: new NavigationGesture(), pointerPan: null
 };
@@ -248,7 +248,7 @@ $('#zoomIn').addEventListener('click', () => { finishStroke(); state.viewport.zo
 $('#zoomOut').addEventListener('click', () => { finishStroke(); state.viewport.zoomAt(state.viewport.zoom / 1.25); redraw(); });
 $('#resetView').addEventListener('click', () => { finishStroke(); state.viewport.reset(); redraw(); });
 $('#pairHandButton').addEventListener('click', () => {
-  finishStroke(); state.drawingHandLabel = null; state.dominantWrist = null; state.offhandGesture.reset(); state.navigation.reset();
+  finishStroke(); state.drawingHandLabel = null; state.dominantWrist = null; state.handRoles.reset(); state.offhandGesture.reset(); state.navigation.reset();
   $('#gestureStatus').textContent = 'Pinch with your drawing hand to pair it. Then use the other hand for shortcuts.';
   toast('Pinch with your drawing hand to pair it');
 });
@@ -596,6 +596,7 @@ $('#mirrorComputer').addEventListener('change', event => {
 });
 
 function setMode(mode) {
+  try { localStorage.setItem('mirrorboard-camera-mode', mode); } catch { /* Session mode still works. */ }
   if (state.mode === mode) return;
   finishStroke(); state.pinchGate.reset(); state.pointFilter.reset(); state.offhandGesture.reset(); state.pendingCameraStart = null;
   state.mode = mode; state.cameraId = '';
@@ -656,10 +657,10 @@ async function loadLandmarker() {
   const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm');
   state.landmarker = await GestureRecognizer.createFromOptions(vision, {
     baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task', delegate: 'GPU' },
-    runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: .55, minHandPresenceConfidence: .55, minTrackingConfidence: .55
+    runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: .35, minHandPresenceConfidence: .4, minTrackingConfidence: .35
   }).catch(async () => GestureRecognizer.createFromOptions(vision, {
     baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task', delegate: 'CPU' },
-    runningMode: 'VIDEO', numHands: 2
+    runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: .35, minHandPresenceConfidence: .4, minTrackingConfidence: .35
   }));
   return state.landmarker;
 }
@@ -757,7 +758,7 @@ function stopCamera() {
   state.cameraToken++;
   state.cameraStarting = false;
   state.running = false; cancelAnimationFrame(state.frameId); finishStroke();
-  state.pinchGate.reset(); state.pointFilter.reset(); state.offhandGesture.reset(); state.navigation.reset(); state.pendingCameraStart = null; state.lastHandSeenAt = 0; state.dominantWrist = null; state.drawingHandLabel = null; state.faceBox = null; state.faceCheckedAt = 0; state.lastFaceAt = 0;
+  state.pinchGate.reset(); state.pointFilter.reset(); state.offhandGesture.reset(); state.navigation.reset(); state.pendingCameraStart = null; state.lastHandSeenAt = 0; state.dominantWrist = null; state.drawingHandLabel = null; state.handRoles.reset(); state.faceBox = null; state.faceCheckedAt = 0; state.lastFaceAt = 0;
   state.stream?.getTracks().forEach(track => track.stop()); state.stream = null;
   video.srcObject = null; overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
   cursor.style.display = 'none'; $('#cameraBox').classList.remove('active');
@@ -771,15 +772,16 @@ $('#cameraButton').addEventListener('click', () => state.running || state.camera
 
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
-function chooseHands(hands, handednesses, poses) {
-  const roles = selectHandRoles(hands, handednesses, state.dominantWrist, state.drawingHandLabel, poses);
+function chooseHands(hands, handednesses, poses, now) {
+  state.handRoles.drawingLabel = state.drawingHandLabel;
+  const roles = state.handRoles.update(hands, handednesses, poses, now);
   if (roles.drawing) state.dominantWrist = roles.drawing[0];
   state.drawingHandLabel = roles.drawingLabel;
   return [roles.drawing, roles.offhand];
 }
 
 function updateFaceBox(now) {
-  if (state.mode !== 'computer' || !state.faceDetector || now - state.faceCheckedAt < 140) return;
+  if (state.mode !== 'computer' || !state.faceDetector || now - state.faceCheckedAt < 250) return;
   state.faceCheckedAt = now;
   try {
     const detections = state.faceDetector.detectForVideo(video, now).detections || [];
@@ -845,6 +847,8 @@ function drawLandmarks(hands) {
   }
 }
 
+const inferenceCanvas = document.createElement('canvas');
+const inferenceCtx = inferenceCanvas.getContext('2d');
 function processFrame() {
   if (!state.running) return;
   state.frameId=requestAnimationFrame(processFrame);
@@ -853,14 +857,20 @@ function processFrame() {
   try {
     const now=performance.now();
     updateFaceBox(now);
-    const result=state.landmarker.recognizeForVideo(video, now);
+    // Keep native Continuity streams from feeding 4K images through inference.
+    const scale = Math.min(1, 960 / video.videoWidth, 720 / video.videoHeight);
+    const iw = Math.round(video.videoWidth * scale), ih = Math.round(video.videoHeight * scale);
+    if (inferenceCanvas.width !== iw || inferenceCanvas.height !== ih) { inferenceCanvas.width = iw; inferenceCanvas.height = ih; }
+    inferenceCtx.drawImage(video, 0, 0, iw, ih);
+    const result=state.landmarker.recognizeForVideo(inferenceCanvas, now);
     const hands=result.landmarks || [];
     const poses = hands.map((hand, i) => recognizedHandPose(hand, result.gestures?.[i]));
     drawLandmarks(hands);
     $('#gestureStatus').textContent = state.drawingHandLabel
       ? `Drawing: ${state.drawingHandLabel} · ${hands.map((_, i) => `${(result.handednesses || result.handedness)?.[i]?.[0]?.categoryName || 'Hand'}: ${poses[i]}`).join(' · ') || 'No hands visible'}`
-      : 'Pinch with your drawing hand to pair it. Keep both hands visible for shortcuts.';
-    const available = hands.map((hand, i) => isHandAwayFromFace(hand) ? i : -1).filter(i => i >= 0);
+      : `Detected ${hands.length}/2 hands. Pinch with your drawing hand to pair it. Keep both hands visible for shortcuts.`;
+    // A pinched drawing hand must never be mistaken for navigation.
+    const available = hands.map((hand, i) => isHandAwayFromFace(hand) && pinchRatio(hand) > .24 ? i : -1).filter(i => i >= 0);
     const navigation = state.navigation.update(available.map(i => hands[i].map(mapToBoard)), available.map(i => poses[i]), now);
     if (navigation && !$('#clearDialog').open) {
       finishStroke(); state.pendingCameraStart = null; state.pinchGate.reset(); state.offhandGesture.reset(); state.pointFilter.reset();
@@ -873,7 +883,7 @@ function processFrame() {
       return;
     }
     const previousWrist=state.dominantWrist;
-    const [dominant, offhand]=chooseHands(hands, result.handednesses || result.handedness || [], poses);
+    const [dominant, offhand]=chooseHands(hands, result.handednesses || result.handedness || [], poses, now);
     const offhandPose = offhand ? poses[hands.indexOf(offhand)] : null;
     if (!dominant) {
       finishStroke(); state.pendingCameraStart=null; state.pinchGate.reset(); state.pointFilter.reset();
@@ -918,3 +928,6 @@ setTheme(initialTheme);
 initializeCloud();
 new ResizeObserver(resizeBoard).observe($('#boardWrap'));
 updateCameraList();
+let preferredCameraMode = 'iphone';
+try { preferredCameraMode = localStorage.getItem('mirrorboard-camera-mode') || 'iphone'; } catch { /* Prefer Continuity Camera. */ }
+setMode(preferredCameraMode === 'computer' ? 'computer' : 'iphone');

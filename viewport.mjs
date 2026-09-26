@@ -25,9 +25,9 @@ export class NavigationGesture {
     const span = mode === 'zoom' ? Math.hypot(palms[0].x - palms[1].x, palms[0].y - palms[1].y) : 1;
     if (mode !== this.mode) {
       this.mode = mode; this.anchor = { ...center, span }; this.startedAt = now; this.engaged = false;
-      return { mode, waiting: true };
+      return null;
     }
-    if (now - this.startedAt < 200) { this.anchor = { ...center, span }; return { mode, waiting: true }; }
+    if (now - this.startedAt < 250) { this.anchor = { ...center, span }; return null; }
     const filtered = { x: this.anchor.x + (center.x - this.anchor.x) * .4, y: this.anchor.y + (center.y - this.anchor.y) * .4, span: this.anchor.span + (span - this.anchor.span) * .4 };
     const result = { mode, waiting: false, dx: filtered.x - this.anchor.x, dy: filtered.y - this.anchor.y, scale: filtered.span / Math.max(this.anchor.span, .06), center: filtered };
     const rawJump = Math.hypot(center.x - this.anchor.x, center.y - this.anchor.y);

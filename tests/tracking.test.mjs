@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, recognizedHandPose, pinchRatio, pickDrawingHandIndex, selectHandRoles, handNearFace, isIPhoneCamera, pickCameraDevice, listCameraDevicesWithPermission, findCameraWithPermission, openCameraStream, cameraVideoConstraints, waitForVideoFrame, requestWideZoom, classifyPencilPixel, findPencilMarker, mapCameraPoint } from '../tracking.mjs';
+import { AdaptivePointFilter, OffhandGesture, PinchGate, classifyHandPose, recognizedHandPose, pinchRatio, pickDrawingHandIndex, selectHandRoles, HandRoleTracker, handNearFace, isIPhoneCamera, pickCameraDevice, listCameraDevicesWithPermission, findCameraWithPermission, openCameraStream, cameraVideoConstraints, waitForVideoFrame, requestWideZoom, classifyPencilPixel, findPencilMarker, mapCameraPoint } from '../tracking.mjs';
 
 function makeHand(pose = 'palm', offsetX = 0) {
   const hand = Array.from({ length: 21 }, () => ({ x: .5 + offsetX, y: .7 }));
@@ -52,26 +52,34 @@ test('point, fist, and open palm remain distinct in either camera orientation', 
   assert.equal(classifyHandPose(bentPoint), 'point');
 });
 
-test('offhand pointer changes color once and held fist undoes once', () => {
+test('offhand shortcuts ignore transient poses, survive brief gaps, and fire once per hold', () => {
   const gesture = new OffhandGesture();
-  const point = makeHand('point');
-  const fist = makeHand('fist');
-  const pointing = gesture.update(point, 100);
-  assert.equal(pointing.action, null);
-  assert.equal(pointing.pause, true);
-  const unclear = makeHand('point');
-  unclear[8] = { x: unclear[8].x + .16, y: unclear[8].y + .16 };
-  assert.equal(gesture.update(unclear, 175).action, null);
-  assert.equal(gesture.update(point, 549).action, null);
+  const point = makeHand('point'), fist = makeHand('fist');
+  assert.equal(gesture.update(point, 100).pause, false);
+  assert.equal(gesture.update(null, 150).action, null);
+  assert.equal(gesture.update(point, 220).pause, true);
+  for (const t of [300, 400, 549]) assert.equal(gesture.update(point, t).action, null);
   assert.equal(gesture.update(point, 550).action, 'color');
-  assert.equal(gesture.update(point, 1400).action, null);
-  const holdingFist = gesture.update(fist, 1500);
-  assert.equal(holdingFist.action, null);
-  assert.equal(holdingFist.pause, true);
-  assert.equal(gesture.update(null, 1600).action, null);
+  for (let t = 600; t <= 1400; t += 100) assert.equal(gesture.update(point, t).action, null);
+  assert.equal(gesture.update(fist, 1500).pause, false);
+  assert.equal(gesture.update(null, 1550).action, null);
+  assert.equal(gesture.update(fist, 1620).pause, true);
   assert.equal(gesture.update(fist, 1800).action, 'undo');
-  assert.equal(gesture.update(fist, 2500).action, null);
-  assert.equal(gesture.update(makeHand('palm'), 2600).pause, true);
+  for (let t = 1900; t <= 2500; t += 100) assert.equal(gesture.update(fist, t).action, null);
+  const palm = makeHand('palm');
+  assert.equal(gesture.update(palm, 2600).pause, false);
+  gesture.update(palm, 2700); gesture.update(palm, 2800);
+  assert.equal(gesture.update(palm, 2900).pause, true);
+  assert.equal(gesture.update(null, 3200).action, null);
+  assert.equal(gesture.update(null, 3300).pause, false);
+});
+
+test('one-frame offhand misclassification does not pause or fire while drawing', () => {
+  const gesture = new OffhandGesture(), hand = makeHand('fist');
+  for (const [time, pose] of [[0,'point'], [33,'fist'], [66,'point'], [99,'palm'], [132,'fist'], [165,'other']]) {
+    const result = gesture.update(hand, time, pose);
+    assert.equal(result.pause, false); assert.equal(result.action, null);
+  }
 });
 
 test('a pinched hand remains the drawing hand when the other hand points', () => {
@@ -113,13 +121,17 @@ test('trained gestures drive fist and pointing shortcuts even when landmark pose
   assert.equal(gesture.update(hand, 100, 'fist').action, null);
   assert.equal(gesture.update(hand, 400, 'fist').action, 'undo');
   assert.equal(gesture.update(hand, 500, 'point').action, null);
+  gesture.update(hand, 650, 'point'); gesture.update(hand, 800, 'point');
   assert.equal(gesture.update(hand, 950, 'point').action, 'color');
 });
 
 test('hands close to the detected face are excluded while extended hands remain usable', () => {
   const face = { x: .35, y: .12, width: .3, height: .34 };
   const near = makeHand('point');
+  near[0] = { x: .5, y: .4 }; near[9] = { x: .5, y: .3 };
   assert.equal(handNearFace(near, face), true);
+  const extended = makeHand('point');
+  assert.equal(handNearFace(extended, face), false);
   const away = near.map(point => ({ x: point.x + .43, y: point.y + .3 }));
   assert.equal(handNearFace(away, face), false);
   assert.equal(handNearFace(near, null), false);
@@ -296,4 +308,29 @@ test('one-frame tracking spike does not draw a bounce, and a new stable position
   filter.update({ x: .8, y: .5 }, 99, wrist);
   assert.equal(filter.update({ x: .8, y: .5 }, 132, wrist).x, .8);
   assert.equal(filter.discontinuity, true);
+});
+
+
+test('spatial hand roles survive label flips, reordered arrays, and offhand-only frames', () => {
+  const tracker = new HandRoleTracker();
+  const drawing = makeHand('palm', -.18); drawing[4] = { ...drawing[8] };
+  const offhand = makeHand('fist', .18);
+  const right = [{ categoryName: 'Right' }], left = [{ categoryName: 'Left' }];
+  assert.equal(tracker.update([drawing, offhand], [right, left], ['palm','fist'], 0).drawing, drawing);
+  const reordered = tracker.update([offhand, drawing], [right, left], ['fist','palm'], 33);
+  assert.equal(reordered.drawing, drawing); assert.equal(reordered.offhand, offhand);
+  const onlyOffhand = tracker.update([offhand], [right], ['fist'], 66);
+  assert.equal(onlyOffhand.drawing, null); assert.equal(onlyOffhand.offhand, offhand);
+  assert.equal(tracker.update([], [], [], 100).drawing, null);
+  assert.equal(tracker.update([drawing], [left], ['palm'], 150).drawing, drawing);
+  tracker.reset(); assert.equal(tracker.drawingLabel, null);
+});
+
+test('lost hand tracking never invents a drawing hand or keeps the pen on', () => {
+  const tracker = new HandRoleTracker(), gate = new PinchGate();
+  const hand = makeHand('palm'); hand[4] = { ...hand[8] };
+  tracker.update([hand], [[{categoryName:'Right'}]], ['palm'], 0);
+  assert.equal(gate.update(pinchRatio(hand)), true);
+  assert.equal(tracker.update([], [], [], 33).drawing, null);
+  assert.equal(gate.update(NaN), false);
 });
